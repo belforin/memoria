@@ -9,3 +9,12 @@ notebooks/
 slurm/
 data/
 datasets/
+
+# SLURM job logs
+*.out
+*.err
+
+# large/generated artifacts
+raw_data/
+videos/
+pretrained_encoders/
