@@ -114,10 +114,9 @@ class OfflineReplayBuffer(IterableDataset):
 
     def _relable_reward(self, episode):
         return relable_episode(self._env, episode)
-
+    #new sample, with timestep
     def _sample(self):
         episode = self._sample_episode()
-        # add +1 for the first dummy transition
         idx = np.random.randint(0, episode_len(episode) - self._traj_length + 1) + 1
         obs = episode["observation"][idx - 1 : idx - 1 + self._traj_length]
         action = episode["action"][idx : idx + self._traj_length]
@@ -125,8 +124,7 @@ class OfflineReplayBuffer(IterableDataset):
         reward = episode["reward"][idx : idx + self._traj_length]
         discount = episode["discount"][idx : idx + self._traj_length] * self._discount
         timestep = np.arange(idx - 1, idx + self._traj_length - 1)[:, np.newaxis]
-        return (obs, action, reward, discount, next_obs, 0)
-
+        return (obs, action, reward, discount, next_obs, timestep)
     def _sample_goal(self):
         episode = self._sample_episode()
         # add +1 for the first dummy transition

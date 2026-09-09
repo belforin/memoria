@@ -1,0 +1,33 @@
+# @package agent
+_target_: agent.dt.DTAgent
+name: dt
+obs_shape: ??? # to be specified later
+action_shape: ??? # to be specified later
+device: ${device}
+lr: 1e-4
+use_tb: ${use_tb}
+# hiperparametros matcheados a la Tabla 9 / experiment.py del repo oficial
+# de Decision Transformer (kzl/decision-transformer), para la validacion
+# de entorno (METODOLOGIA_DT_HDT.md, seccion 2.5). num_grad_steps=100000
+# (max_iters=10 x num_steps_per_iter=10000) se fija en pretrain_dt.yaml,
+# no aca.
+# weight_decay/warmup_steps: agregados en la seccion 2.5.1 para matchear
+# el AdamW + warmup lineal del codigo oficial (antes usabamos Adam simple).
+weight_decay: 1e-4
+warmup_steps: 10000
+# use_adamw=false vuelve a Adam simple (sin weight decay agrupado ni
+# warmup) -- se usa para la comparacion "con/sin AdamW" de la seccion 2.8,
+# manteniendo la normalizacion de obs fija en ambas ramas.
+use_adamw: true
+batch_size: 64
+stddev_schedule: 0.2
+transformer_cfg:
+  n_embd: 128
+  n_head: 1
+  n_layer: 3
+  embd_pdrop: 0.1
+  resid_pdrop: 0.1
+  attn_pdrop: 0.1
+  traj_length: 20       # K en el paper/codigo oficial
+  episode_length: 1000  # max_ep_len en el codigo oficial -- dimensiona pos_embed
+  return_scale: 1000    # "scale" en el codigo oficial (normalizacion de reward/return)

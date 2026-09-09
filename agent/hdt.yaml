@@ -1,0 +1,38 @@
+# @package agent
+_target_: agent.hdt.HDTAgent
+name: hdt
+obs_shape: ??? # to be specified later
+action_shape: ??? # to be specified later
+device: ${device}
+lr: 1e-4
+use_tb: ${use_tb}
+# weight_decay/warmup_steps: mismo AdamW + warmup lineal que dt.yaml, ver
+# METODOLOGIA_DT_HDT.md, seccion 2.5.1.
+weight_decay: 1e-4
+warmup_steps: 10000
+# use_adamw=false vuelve a Adam simple, ver nota en dt.yaml / METODOLOGIA
+# seccion 2.8.
+use_adamw: true
+batch_size: 64
+stddev_schedule: 0.2
+transformer_cfg:
+  # n_embd recalculado para paridad de parametros con el DT ya matcheado
+  # a la Tabla 9 del paper de Decision Transformer (dt.yaml: n_embd=128,
+  # n_head=1, n_layer=3 -> 727.302 params en halfcheetah/walker2d,
+  # 725.763 en hopper). Con las profundidades actuales
+  # (n_obs_layer=n_act_layer=n_layer=3), n_embd=68 da 713.734 params en
+  # halfcheetah/walker2d (-1.87%) y 712.915 en hopper (-1.77%). Ver
+  # METODOLOGIA_DT_HDT.md, seccion 1 (Etapa 0) -- reemplaza el n_embd=88
+  # calculado contra la config anterior de dt.yaml (n_layer=5), que ya
+  # no aplica.
+  n_embd: 68
+  n_head: 1
+  n_obs_layer: 3  # profundidad de T_obs (encoder autoregresivo de observaciones)
+  n_act_layer: 3  # profundidad de T_act (encoder autoregresivo de acciones)
+  n_layer: 3       # profundidad del bloque HDT de nivel superior (R,S,A intercalado)
+  embd_pdrop: 0.1
+  resid_pdrop: 0.1
+  attn_pdrop: 0.1
+  traj_length: 20       # matcheado a K de dt.yaml
+  episode_length: 1000  # largo maximo del episodio -- dimensiona pos_embed, ver nota en dt.yaml
+  return_scale: 1000    # constante para normalizar el return-to-go, ver nota en dt.yaml
