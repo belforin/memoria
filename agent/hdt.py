@@ -17,6 +17,15 @@ _SHARED_FIELDS = (
     "attn_pdrop",
 )
 
+# Campos de la Etapa 2 (visual, CoinRun -- METODOLOGIA_DT_HDT.md seccion 3),
+# opcionales: los config de D4RL (dt.yaml/hdt.yaml) no los tienen, así que
+# se leen con getattr(..., default) en vez de exigirlos como _SHARED_FIELDS.
+_OPTIONAL_FIELDS = {
+    "discrete_actions": False,
+    "pixel_encoder_type": "procgen_impala",
+    "pretrained_encoder_path": None,
+}
+
 
 def _sub_config(config, n_layer):
     """
@@ -27,7 +36,9 @@ def _sub_config(config, n_layer):
     sobreescrito. getattr() funciona igual sobre un DictConfig de
     OmegaConf (entrenamiento real) que sobre un SimpleNamespace (tests).
     """
-    ns = SimpleNamespace(**{f: getattr(config, f) for f in _SHARED_FIELDS})
+    fields = {f: getattr(config, f) for f in _SHARED_FIELDS}
+    fields.update({f: getattr(config, f, default) for f, default in _OPTIONAL_FIELDS.items()})
+    ns = SimpleNamespace(**fields)
     ns.n_layer = n_layer
     return ns
 
@@ -41,35 +52,55 @@ class HierarchicalDecisionTransformer(nn.Module):
     atención causal antes de intercalarla con el token de return.
     """
 
-    def __init__(self, obs_dim, action_dim, config):
+    def __init__(self, obs_shape, action_dim, config):
         super().__init__()
         self.n_embd = config.n_embd
         self.traj_length = config.traj_length
         self.episode_length = config.episode_length
         self.max_len = config.traj_length * 3
 
+        # obs_shape: int (o tupla de 1) = obs vectorial (D4RL, Etapa 1);
+        # tupla de 3 (H,W,C) = obs de pixeles (CoinRun, Etapa 2). Ver
+        # METODOLOGIA_DT_HDT.md, seccion 3.
+        if isinstance(obs_shape, int):
+            obs_shape = (obs_shape,)
+        self.pixel_obs = len(obs_shape) == 3
+        self.discrete_actions = bool(getattr(config, "discrete_actions", False))
+        self.label_smoothing = float(getattr(config, "label_smoothing", 0.0))
+
         obs_config = _sub_config(config, config.n_obs_layer)
         action_config = _sub_config(config, config.n_act_layer)
         top_config = _sub_config(config, config.n_layer)
 
         # normalizacion z-score de observaciones, igual que dt.py -- ver
-        # METODOLOGIA_DT_HDT.md, seccion 2.8.
+        # METODOLOGIA_DT_HDT.md, seccion 2.8. Se registra siempre (incluso
+        # con obs de pixeles, donde forward() lo ignora), ver nota
+        # equivalente en agent/dt.py.
+        obs_dim = obs_shape[0] if not self.pixel_obs else 1
         self.register_buffer("obs_mean", torch.zeros(obs_dim))
         self.register_buffer("obs_std", torch.ones(obs_dim))
 
-        self.obs_encoder = ObservationSequenceEncoding(obs_dim, obs_config)
+        self.obs_encoder = ObservationSequenceEncoding(obs_shape, obs_config)
         self.action_encoder = ActionSequenceEncoding(action_dim, action_config)
 
         self.return_embed = nn.Linear(1, self.n_embd)
 
         self.blocks = nn.ModuleList([Block(top_config) for _ in range(top_config.n_layer)])
 
-        self.action_head = nn.Sequential(
-            nn.LayerNorm(self.n_embd),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.n_embd, action_dim),
-            nn.Tanh(),
-        )
+        if self.discrete_actions:
+            # logits crudos, mismo patron que agent/dt.py -- ver ahí.
+            self.action_head = nn.Sequential(
+                nn.LayerNorm(self.n_embd),
+                nn.ReLU(inplace=True),
+                nn.Linear(self.n_embd, action_dim),
+            )
+        else:
+            self.action_head = nn.Sequential(
+                nn.LayerNorm(self.n_embd),
+                nn.ReLU(inplace=True),
+                nn.Linear(self.n_embd, action_dim),
+                nn.Tanh(),
+            )
 
         self.initialize_weights()
 
@@ -85,6 +116,15 @@ class HierarchicalDecisionTransformer(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        # Guard identico al de agent/dt.py::DecisionTransformer._init_weights
+        # -- necesario aca porque self.obs_encoder (ObservationSequenceEncoding)
+        # ya carga y congela su propio encoder de pixeles ANTES de que este
+        # self.initialize_weights() de nivel superior corra self.apply(...)
+        # sobre todo el arbol (incluido obs_encoder.embed). Sin este guard,
+        # pisaria los pesos pretrained ya cargados -- bug real encontrado en
+        # esta sesion. Ver METODOLOGIA_DT_HDT.md, seccion 3.
+        if hasattr(m, "weight") and m.weight is not None and not m.weight.requires_grad:
+            return
         if isinstance(m, nn.Linear):
             torch.nn.init.xavier_uniform_(m.weight)
             if isinstance(m, nn.Linear) and m.bias is not None:
@@ -102,21 +142,24 @@ class HierarchicalDecisionTransformer(nn.Module):
     def forward(self, returns_to_go, obs, action, timesteps=None):
         """
         returns_to_go: (B, T, 1)  -- ya escalado (dividido por return_scale)
-        obs:           (B, T, obs_dim)
-        action:        (B, T, action_dim)
+        obs:           (B, T, obs_dim) obs vectorial, o (B, T, H, W, C) uint8
+                       obs de pixeles (self.pixel_obs)
+        action:        (B, T, action_dim) continua, o (B, T, 1) int64 indices
+                       de accion (self.discrete_actions)
         timesteps:     (B, T) long tensor con el índice real dentro del
                        episodio (si no se pasa, se asume 0..T-1). Se pasa
                        el mismo tensor a T_obs, T_act y al token de
                        return -- misma convención que ya usa dt.py.
         """
-        batch_size, T, _ = obs.size()
+        batch_size, T = obs.shape[0], obs.shape[1]
 
         if timesteps is None:
             timesteps = (
                 torch.arange(T, device=obs.device).unsqueeze(0).repeat(batch_size, 1)
             )
 
-        obs = (obs - self.obs_mean) / self.obs_std
+        if not self.pixel_obs:
+            obs = (obs - self.obs_mean) / self.obs_std
 
         # T_obs / T_act: cada uno ya devuelve una secuencia contextualizada
         # y con posición propia, no hace falta sumarle time_emb de nuevo.
@@ -179,7 +222,7 @@ class HDTAgent(DTAgent):
             self.config = transformer_cfg
 
         self.model = HierarchicalDecisionTransformer(
-            obs_shape[0], action_shape[0], self.config
+            obs_shape, action_shape[0], self.config
         ).to(device)
         if obs_mean is not None:
             self.model.set_obs_stats(obs_mean, obs_std)

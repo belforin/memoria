@@ -1,8 +1,11 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 import utils
 from agent.modules.attention import Block
+from agent.modules.pixel_encoder import PixelEncoder
+from agent.modules.load_pretrained_encoder import load_procgen_impala
 
 
 def configure_optimizer(model, lr, weight_decay, warmup_steps):
@@ -14,12 +17,28 @@ def configure_optimizer(model, lr, weight_decay, warmup_steps):
     de peso (atencion, MLP, proyecciones lineales de entrada); no decae en
     bias, LayerNorm ni embeddings de posicion. Ver METODOLOGIA_DT_HDT.md,
     seccion 2.5.1.
+
+    Parametros con requires_grad=False (el encoder visual congelado de la
+    Etapa 2, ver seccion 3) se excluyen por completo de la clasificacion:
+    nunca reciben gradiente, así que no necesitan grupo de weight decay, y
+    ademas rompen la clasificacion por tipo de capa (el encoder IMPALA
+    tiene nn.Conv2d, que no es ni nn.Linear ni nn.LayerNorm/nn.Embedding).
+    Mismo fix que agent/mdp.py::_classify_params de Benjamin Mancilla
+    (rama upstream/hier-procgen) resuelve para su encoder congelado.
     """
     decay, no_decay = set(), set()
-    whitelist_modules = (nn.Linear,)
+    # nn.Conv2d (y Conv1d/Conv3d, por si acaso): el encoder visual de la
+    # Etapa 2 (agent/modules/impala_cnn.py) es todo Conv2d -- si alguna vez
+    # se entrena sin congelar (encoder_trainable, no usado hoy), sus pesos
+    # deben caer en el grupo "decay" igual que cualquier matriz de pesos.
+    # Mismos decay_modules que agent/mdp.py::_classify_params de Benjamin
+    # Mancilla (rama upstream/hier-procgen).
+    whitelist_modules = (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)
     blacklist_modules = (nn.LayerNorm, nn.Embedding)
     for mn, m in model.named_modules():
-        for pn, _ in m.named_parameters(recurse=False):
+        for pn, p in m.named_parameters(recurse=False):
+            if not p.requires_grad:
+                continue
             fpn = f"{mn}.{pn}" if mn else pn
             if pn.endswith("bias"):
                 no_decay.add(fpn)
@@ -28,7 +47,7 @@ def configure_optimizer(model, lr, weight_decay, warmup_steps):
             elif pn.endswith("weight") and isinstance(m, blacklist_modules):
                 no_decay.add(fpn)
 
-    param_dict = dict(model.named_parameters())
+    param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
     assert len(decay & no_decay) == 0, "parametro asignado a ambos grupos"
     assert len(param_dict.keys() - (decay | no_decay)) == 0, (
         "parametro sin asignar a ningun grupo de weight decay"
@@ -46,13 +65,26 @@ def configure_optimizer(model, lr, weight_decay, warmup_steps):
 
 
 class DecisionTransformer(nn.Module):
-    def __init__(self, obs_dim, action_dim, config):
+    def __init__(self, obs_shape, action_dim, config):
         super().__init__()
         self.n_embd = config.n_embd
         self.traj_length = config.traj_length
         self.episode_length = config.episode_length
         # cada timestep aporta 3 tokens: return, state, action
         self.max_len = config.traj_length * 3
+
+        # obs_shape: int (o tupla de 1) = obs vectorial (D4RL, Etapa 1);
+        # tupla de 3 (H,W,C) = obs de pixeles (CoinRun, Etapa 2). Ver
+        # METODOLOGIA_DT_HDT.md, seccion 3.
+        if isinstance(obs_shape, int):
+            obs_shape = (obs_shape,)
+        self.pixel_obs = len(obs_shape) == 3
+
+        # acción discreta (Procgen, 15 acciones) vs continua (D4RL). Ver
+        # METODOLOGIA_DT_HDT.md, seccion 3 -- default False no rompe
+        # configs/tests existentes de D4RL.
+        self.discrete_actions = bool(getattr(config, "discrete_actions", False))
+        self.label_smoothing = float(getattr(config, "label_smoothing", 0.0))
 
         # normalizacion z-score de observaciones (media/std del dataset de
         # entrenamiento, fijadas via set_obs_stats antes de entrenar). Sin
@@ -61,25 +93,67 @@ class DecisionTransformer(nn.Module):
         # entrenamiento como en evaluacion. Ver METODOLOGIA_DT_HDT.md,
         # seccion 2.8. Registrado como buffer para que quede en el
         # checkpoint (state_dict) y eval_dt.py recupere los mismos valores
-        # usados en entrenamiento.
+        # usados en entrenamiento. Se registra siempre (incluso con obs de
+        # pixeles, donde forward() lo ignora) para no bifurcar el
+        # state_dict/checkpoint segun el tipo de obs.
+        obs_dim = obs_shape[0] if not self.pixel_obs else 1
         self.register_buffer("obs_mean", torch.zeros(obs_dim))
         self.register_buffer("obs_std", torch.ones(obs_dim))
 
         self.return_embed = nn.Linear(1, self.n_embd)
-        self.state_embed = nn.Linear(obs_dim, self.n_embd)
-        self.action_embed = nn.Linear(action_dim, self.n_embd)
+        if self.pixel_obs:
+            # PixelEncoder/load_procgen_impala: mismo patron que
+            # agent/mdp.py de Benjamin Mancilla (rama upstream/hier-procgen).
+            # El checkpoint pretrained se carga MAS ABAJO, despues de
+            # self.initialize_weights() -- ver nota ahi (orden importa).
+            pixel_encoder_type = str(getattr(config, "pixel_encoder_type", "procgen_impala"))
+            self.state_embed = PixelEncoder(obs_shape, self.n_embd, encoder_type=pixel_encoder_type)
+        else:
+            self.state_embed = nn.Linear(obs_shape[0], self.n_embd)
+
+        if self.discrete_actions:
+            num_actions = action_dim
+            self.action_embed = nn.Embedding(num_actions, self.n_embd)
+        else:
+            self.action_embed = nn.Linear(action_dim, self.n_embd)
 
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
 
         # DT solo predice la acción, a partir del token de estado
-        self.action_head = nn.Sequential(
-            nn.LayerNorm(self.n_embd),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.n_embd, action_dim),
-            nn.Tanh(),
-        )
+        if self.discrete_actions:
+            # logits crudos -- softmax aplicado implicito dentro de
+            # F.cross_entropy (DTAgent.update_actor), no aca. Mismo patron
+            # que agent/mdp.py::action_head discreto.
+            self.action_head = nn.Sequential(
+                nn.LayerNorm(self.n_embd),
+                nn.ReLU(inplace=True),
+                nn.Linear(self.n_embd, action_dim),
+            )
+        else:
+            self.action_head = nn.Sequential(
+                nn.LayerNorm(self.n_embd),
+                nn.ReLU(inplace=True),
+                nn.Linear(self.n_embd, action_dim),
+                nn.Tanh(),
+            )
 
         self.initialize_weights()
+
+        if self.pixel_obs:
+            # Cargar (y congelar) los pesos pretrained DESPUES de
+            # initialize_weights(): self.apply(self._init_weights) de mas
+            # arriba reinicializa con xavier_uniform_ CUALQUIER nn.Linear
+            # del modelo, incluida state_embed.projection -- si se carga
+            # el checkpoint antes, ese paso lo pisa. Bug real encontrado en
+            # agent/mdp.py de Benjamin (rama upstream/hier-procgen): en su
+            # caso queda enmascarado porque su enc_n_embd=128 != 256 (dim
+            # del checkpoint) fuerza el fallback ignore_proj=True, asi que
+            # la proyeccion nunca se cargaba en primer lugar. Aca n_embd=256
+            # coincide exacto con el checkpoint, asi que el orden si importa.
+            # Ver METODOLOGIA_DT_HDT.md, seccion 3.
+            ckpt_path = getattr(config, "pretrained_encoder_path", None)
+            if ckpt_path is not None:
+                load_procgen_impala(self.state_embed, ckpt_path, freeze=True)
 
     def initialize_weights(self):
         # embedding posicional por timestep (aprendido), dimensionado al
@@ -93,6 +167,13 @@ class DecisionTransformer(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        # Si m.weight ya esta congelado (requires_grad=False), es un
+        # submodulo con pesos pretrained (encoder visual de la Etapa 2) --
+        # no reinicializar. self.apply() recorre TODO el arbol de
+        # submodulos, asi que sin este guard pisaria pesos pretrained ya
+        # cargados. Ver METODOLOGIA_DT_HDT.md, seccion 3.
+        if hasattr(m, "weight") and m.weight is not None and not m.weight.requires_grad:
+            return
         if isinstance(m, nn.Linear):
             torch.nn.init.xavier_uniform_(m.weight)
             if isinstance(m, nn.Linear) and m.bias is not None:
@@ -110,12 +191,14 @@ class DecisionTransformer(nn.Module):
     def forward(self, returns_to_go, obs, action, timesteps=None):
         """
         returns_to_go: (B, T, 1)  -- ya escalado (dividido por return_scale)
-        obs:           (B, T, obs_dim)
-        action:        (B, T, action_dim)
+        obs:           (B, T, obs_dim) obs vectorial, o (B, T, H, W, C) uint8
+                       obs de pixeles (self.pixel_obs)
+        action:        (B, T, action_dim) continua, o (B, T, 1) int64 indices
+                       de accion (self.discrete_actions)
         timesteps:     (B, T) long tensor con el índice real dentro del
                        episodio (si no se pasa, se asume 0..T-1)
         """
-        batch_size, T, obs_dim = obs.size()
+        batch_size, T = obs.shape[0], obs.shape[1]
 
         if timesteps is None:
             timesteps = (
@@ -123,11 +206,22 @@ class DecisionTransformer(nn.Module):
             )
         time_emb = self.pos_embed(timesteps)  # (B, T, n_embd)
 
-        obs = (obs - self.obs_mean) / self.obs_std
+        if not self.pixel_obs:
+            obs = (obs - self.obs_mean) / self.obs_std
 
         r = self.return_embed(returns_to_go) + time_emb
         s = self.state_embed(obs) + time_emb
-        a = self.action_embed(action) + time_emb
+
+        if self.discrete_actions:
+            # (B, T, 1) o (B, T) int -> (B, T) long, igual que
+            # agent/mdp.py::forward_encoder de Benjamin (rama
+            # upstream/hier-procgen).
+            a_idx = action.long()
+            if a_idx.dim() == 3 and a_idx.size(-1) == 1:
+                a_idx = a_idx.squeeze(-1)
+            a = self.action_embed(a_idx) + time_emb
+        else:
+            a = self.action_embed(action) + time_emb
 
         # intercalar como (R_1, s_1, a_1, R_2, s_2, a_2, ...)
         x = (
@@ -180,7 +274,7 @@ class DTAgent:
             self.config = transformer_cfg
 
         self.model = DecisionTransformer(
-            obs_shape[0], action_shape[0], self.config
+            obs_shape, action_shape[0], self.config
         ).to(device)
         if obs_mean is not None:
             self.model.set_obs_stats(obs_mean, obs_std)
@@ -242,6 +336,12 @@ class DTAgent:
         rtg = torch.as_tensor(rtg, device=self.device).unsqueeze(0) / self.return_scale
         timestep = torch.as_tensor(timestep, device=self.device, dtype=torch.long).unsqueeze(0)
         pred_a = self.model(rtg, obs, action, timesteps=timestep)[:, -1]
+        if self.model.discrete_actions:
+            # logits (1, num_actions) -> indice de accion escalar. argmax
+            # (greedy), no muestreo -- consistente con --sample=False de
+            # eval_coinrun.py por defecto; ver METODOLOGIA_DT_HDT.md secc. 3.
+            action_idx = pred_a.argmax(dim=-1)
+            return action_idx.cpu().numpy()
         return pred_a.cpu().numpy()[0]
 
     def update_actor(self, obs, action, reward, discount, timestep, step):
@@ -250,7 +350,21 @@ class DTAgent:
         rtg = self.compute_returns_to_go(reward, discount) / self.return_scale
         pred_a = self.model(rtg, obs, action, timesteps=timestep)
 
-        loss = ((pred_a - action) ** 2).mean()
+        if self.model.discrete_actions:
+            # logits (B, T, num_actions) vs. indices de accion (B, T, 1) o
+            # (B, T) -- mismo squeeze/reshape que agent/mdp.py::forward_loss
+            # de Benjamin (rama upstream/hier-procgen).
+            B, T, A = pred_a.shape
+            a_tgt = action.long()
+            if a_tgt.dim() == 3 and a_tgt.size(-1) == 1:
+                a_tgt = a_tgt.squeeze(-1)
+            loss = F.cross_entropy(
+                pred_a.reshape(B * T, A),
+                a_tgt.reshape(B * T),
+                label_smoothing=self.model.label_smoothing,
+            )
+        else:
+            loss = ((pred_a - action) ** 2).mean()
 
         self.opt.zero_grad(set_to_none=True)
         loss.backward()

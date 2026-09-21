@@ -1,0 +1,42 @@
+# @package agent
+_target_: agent.dt.DTAgent
+name: dt
+obs_shape: ??? # to be specified later -- (64,64,3) para CoinRun
+action_shape: ??? # to be specified later -- (15,) para CoinRun (Procgen)
+device: ${device}
+lr: 1e-4
+use_tb: ${use_tb}
+# Etapa 2 (visual, CoinRun) -- METODOLOGIA_DT_HDT.md seccion 3. Config
+# separada de dt.yaml (D4RL) para no tocar la Etapa 1 ya evaluada.
+weight_decay: 1e-4
+warmup_steps: 10000
+use_adamw: true
+batch_size: 64
+stddev_schedule: 0.2
+transformer_cfg:
+  # n_embd=256: coincide EXACTO con la proyeccion del encoder pretrained
+  # (pretrained_encoders/procgen_coinrun_easy_encoder.pt, feature_dim=256)
+  # -- permite cargarlo directo sin ignore_proj/cirugia. Ver
+  # METODOLOGIA_DT_HDT.md, seccion 3 (por que no se reusa la paridad de
+  # parametros DT/HDT de la Etapa 0 aca).
+  n_embd: 256
+  n_head: 4
+  n_layer: 3
+  embd_pdrop: 0.1
+  resid_pdrop: 0.1
+  attn_pdrop: 0.1
+  traj_length: 20       # matcheado a convert_coinrun_to_npz.py --min_length
+  episode_length: 1000  # timeout real de Procgen, confirmado sobre data/coinrun/ (max real: 1000)
+  return_scale: 10      # CoinRun: retorno tipico en [0,10] (coinrun/easy), no ~1000 como D4RL
+
+  # Acepta pixeles como observacion, con el encoder IMPALA congelado de
+  # Benjamin Mancilla (rama upstream/hier-procgen, agent/mdp.py) -- ver
+  # METODOLOGIA_DT_HDT.md seccion 3 para el porque de cada campo.
+  pixel_encoder_type: procgen_impala
+  pretrained_encoder_path: pretrained_encoders/procgen_coinrun_easy_encoder.pt
+
+  # Acciones discretas (Procgen: 15 acciones, [0,14]) -- nn.Embedding +
+  # cross-entropy en vez de nn.Linear + MSE/Tanh.
+  discrete_actions: true
+  num_actions: 15
+  label_smoothing: 0.0

@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torchvision.models as models
 
 from agent.modules.impala_cnn import ImpalaCnn
 
@@ -70,6 +69,11 @@ class ResNetFrozenEncoder(nn.Module):
 
     def __init__(self, obs_shape, feature_dim: int):
         super().__init__()
+        # import diferido: torchvision no esta instalado en todos los conda
+        # env que importan este modulo (ej. dt-env, usado por eval_dt.py),
+        # y solo hace falta para este encoder legacy.
+        import torchvision.models as models
+
         H, W, C = obs_shape
 
         resnet = models.resnet18(pretrained=True)

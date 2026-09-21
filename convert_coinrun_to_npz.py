@@ -120,7 +120,14 @@ def main():
             n_dropped += 1
             dropped_lengths.append(T)
             continue
-        out_path = out_dir / f"{f.stem}.npz"
+        # episode_<idx>_<T>.npz -- misma convencion que d4rl_data.py
+        # (replay_buffer.py::_load() parsea el stem asumiendo exactamente
+        # ese formato: prefix_idx_len. El nombre crudo de gen_dgrl, ej.
+        # "20230329T085223_22588_20_81_10.00.npz", NO calza (mas de 3
+        # partes al separar por "_", y la ultima no es entera) -- bug real
+        # encontrado en el smoke test de pretrain_coinrun.py, ver
+        # METODOLOGIA_DT_HDT.md seccion 3.
+        out_path = out_dir / f"episode_{n_kept}_{T}.npz"
         save_episode(ep, out_path)
         n_kept += 1
 

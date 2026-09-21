@@ -1,0 +1,37 @@
+# @package agent
+_target_: agent.hdt.HDTAgent
+name: hdt
+obs_shape: ??? # to be specified later -- (64,64,3) para CoinRun
+action_shape: ??? # to be specified later -- (15,) para CoinRun (Procgen)
+device: ${device}
+lr: 1e-4
+use_tb: ${use_tb}
+weight_decay: 1e-4
+warmup_steps: 10000
+use_adamw: true
+batch_size: 64
+stddev_schedule: 0.2
+transformer_cfg:
+  # n_embd=256, igual que dt_coinrun.yaml -- coincide con la proyeccion
+  # del encoder pretrained en la rama de T_obs (ObservationSequenceEncoding).
+  # Sin paridad de parametros DT/HDT en esta pasada (METODOLOGIA_DT_HDT.md
+  # seccion 3): forzarla obligaria a un n_embd de HDT distinto de 256 en
+  # alguna rama, perdiendo la carga directa del encoder.
+  n_embd: 256
+  n_head: 4
+  n_obs_layer: 3
+  n_act_layer: 3
+  n_layer: 3
+  embd_pdrop: 0.1
+  resid_pdrop: 0.1
+  attn_pdrop: 0.1
+  traj_length: 20
+  episode_length: 1000
+  return_scale: 10
+
+  pixel_encoder_type: procgen_impala
+  pretrained_encoder_path: pretrained_encoders/procgen_coinrun_easy_encoder.pt
+
+  discrete_actions: true
+  num_actions: 15
+  label_smoothing: 0.0

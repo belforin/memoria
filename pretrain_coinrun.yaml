@@ -1,0 +1,37 @@
+defaults:
+  - agent: dt_coinrun
+  - override hydra/launcher: submitit_local
+
+# dataset settings (CoinRun/Procgen, convertido con convert_coinrun_to_npz.py)
+task: coinrun
+obs_shape: [64, 64, 3]
+discount: 0.99
+# train settings
+num_grad_steps: 100010
+log_every_steps: 1000
+# snapshot
+snapshots: [0, 25000, 50000, 75000, 100000]
+snapshot_dir: ../../../snapshot/${pretrained_data}
+# resume
+resume: false
+resume_dir: none
+resume_step: 0
+# dataset -- data/coinrun/*.npz ya estan en replay_buffer_dir/task (ver
+# METODOLOGIA_DT_HDT.md seccion 3, no hace falta reorganizar nada)
+replay_buffer_dir: data
+replay_buffer_size: 100000000
+replay_buffer_num_workers: 16
+batch_size: ${agent.batch_size}
+# misc
+seed: 1
+device: cuda
+use_tb: true
+use_wandb: true
+project: maskdp-mm-coinrun
+notes: "pretrain coinrun (Etapa 2, visual)"
+exp_name: output
+
+
+hydra:
+  run:
+    dir: /path/to/your/models/${exp_name}/${now:%Y.%m.%d}/${now:%H%M%S}_${agent.name}
