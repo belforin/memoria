@@ -1,0 +1,16 @@
+IMAGEIO FFMPEG_WRITER WARNING: input image is not divisible by macro_block_size=16, resizing from (500, 500) to (512, 512) to ensure video compatibility with most codecs and players. To prevent resizing, make your input image divisible by the macro_block_size or set the macro_block_size to 1 (risking incompatibility).
+[swscaler @ 0x8923280] Warning: data is not aligned! This can lead to a speed loss
+number of parameters: %e 713734
+  episodio 0: pasos=1000 retorno=3823.38
+  video: videos/walker2d_hdt_norm_adam.mp4
+  episodio 1: pasos=1000 retorno=3851.67
+  episodio 2: pasos=1000 retorno=3779.11
+  episodio 3: pasos=1000 retorno=3826.65
+  episodio 4: pasos=665 retorno=2510.07
+  episodio 5: pasos=1000 retorno=3720.20
+  episodio 6: pasos=1000 retorno=3752.23
+  episodio 7: pasos=741 retorno=2745.00
+  episodio 8: pasos=869 retorno=3285.79
+  episodio 9: pasos=1000 retorno=3929.63
+
+walker2d (hdt, target_return=5000.0): retorno 3522.37 +/- 479.62 | score normalizado D4RL 76.69 +/- 10.45 (10 episodios)

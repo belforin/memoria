@@ -1,0 +1,16 @@
+IMAGEIO FFMPEG_WRITER WARNING: input image is not divisible by macro_block_size=16, resizing from (500, 500) to (512, 512) to ensure video compatibility with most codecs and players. To prevent resizing, make your input image divisible by the macro_block_size or set the macro_block_size to 1 (risking incompatibility).
+[swscaler @ 0x29e3e280] Warning: data is not aligned! This can lead to a speed loss
+number of parameters: %e 712915
+  episodio 0: pasos=550 retorno=1764.21
+  video: videos/hopper_hdt_norm_adam.mp4
+  episodio 1: pasos=489 retorno=1532.33
+  episodio 2: pasos=545 retorno=1732.40
+  episodio 3: pasos=508 retorno=1599.79
+  episodio 4: pasos=500 retorno=1556.88
+  episodio 5: pasos=548 retorno=1763.03
+  episodio 6: pasos=542 retorno=1738.03
+  episodio 7: pasos=500 retorno=1561.48
+  episodio 8: pasos=565 retorno=1797.83
+  episodio 9: pasos=736 retorno=2374.11
+
+hopper (hdt, target_return=3600.0): retorno 1742.01 +/- 231.25 | score normalizado D4RL 54.15 +/- 7.11 (10 episodios)

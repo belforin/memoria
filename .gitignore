@@ -18,3 +18,6 @@ datasets/
 raw_data/
 videos/
 pretrained_encoders/
+
+# eval rollout videos (large binaries)
+videos_*/
