@@ -106,6 +106,7 @@ def main(cfg):
         domain,
         cfg.agent.transformer_cfg.traj_length,
         relabel=False,
+        return_to_go=True,
     )
     train_iter = iter(train_loader)
 

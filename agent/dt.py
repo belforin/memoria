@@ -344,10 +344,21 @@ class DTAgent:
             return action_idx.cpu().numpy()
         return pred_a.cpu().numpy()[0]
 
-    def update_actor(self, obs, action, reward, discount, timestep, step):
+    def update_actor(self, obs, action, reward, discount, timestep, step, rtg=None):
+        """
+        rtg: (B, T, 1) return-to-go CRUDO del episodio completo, sin
+        descontar (lo entrega OfflineReplayBuffer con return_to_go=True).
+        Si es None se cae a compute_returns_to_go sobre la ventana, que solo
+        ve los K pasos del batch y descuenta con `discount`: NO es el
+        return-to-go del metodo (ver METODOLOGIA_DT_HDT.md, seccion 2.10);
+        queda solo para llamadores sin informacion del episodio (tests con
+        tensores dummy).
+        """
         metrics = dict()
 
-        rtg = self.compute_returns_to_go(reward, discount) / self.return_scale
+        if rtg is None:
+            rtg = self.compute_returns_to_go(reward, discount)
+        rtg = rtg / self.return_scale
         pred_a = self.model(rtg, obs, action, timesteps=timestep)
 
         if self.model.discrete_actions:
@@ -380,7 +391,12 @@ class DTAgent:
         metrics = dict()
 
         batch = next(replay_iter)
-        obs, action, reward, discount, next_obs, timestep = utils.to_torch(
+        if len(batch) != 7:
+            raise ValueError(
+                "DT/HDT necesitan el return-to-go del episodio completo: crear "
+                "el loader con make_replay_loader(..., return_to_go=True)"
+            )
+        obs, action, reward, discount, next_obs, timestep, rtg = utils.to_torch(
             batch, self.device
         )
         # timestep viene como float desde utils.to_torch; nn.Embedding necesita long
@@ -390,6 +406,6 @@ class DTAgent:
             metrics["batch_reward"] = reward.mean().item()
 
         metrics.update(
-            self.update_actor(obs, action, reward, discount, timestep, step)
+            self.update_actor(obs, action, reward, discount, timestep, step, rtg=rtg)
         )
         return metrics

@@ -60,6 +60,7 @@ class OfflineReplayBuffer(IterableDataset):
         cfg,
         relabel,
         obs,
+        return_to_go=False,
     ):
         self._env = env
         self._replay_dir = replay_dir
@@ -76,6 +77,8 @@ class OfflineReplayBuffer(IterableDataset):
         self._cfg = cfg
         self._relabel = relabel
         self._obs = obs
+        # DT/HDT: devolver tambien el return-to-go del EPISODIO completo (ver _sample)
+        self._return_to_go = return_to_go
         # print('seed', np.random.get_state()[1][0])
         # random.seed(np.random.get_state()[1][0])
 
@@ -101,6 +104,14 @@ class OfflineReplayBuffer(IterableDataset):
             episode = load_episode(eps_fn, self._domain, self._obs)
             if relable:
                 episode = self._relable_reward(episode)
+            if self._return_to_go:
+                # suma acumulada inversa SIN descontar, sobre el episodio
+                # completo (como discount_cumsum(gamma=1.) del codigo oficial
+                # de Decision Transformer): rtg[i] = sum_{j>=i} reward[j].
+                # reward[0] es la transicion dummy (0), asi que rtg[0] es el
+                # retorno total del episodio.
+                reward = episode["reward"]
+                episode["rtg"] = np.cumsum(reward[::-1], axis=0)[::-1].astype(np.float32)
             self._episode_fns.append(eps_fn)
             self._episodes[eps_fn] = episode
             self._size += episode_len(episode)
@@ -124,6 +135,9 @@ class OfflineReplayBuffer(IterableDataset):
         reward = episode["reward"][idx : idx + self._traj_length]
         discount = episode["discount"][idx : idx + self._traj_length] * self._discount
         timestep = np.arange(idx - 1, idx + self._traj_length - 1)[:, np.newaxis]
+        if self._return_to_go:
+            rtg = episode["rtg"][idx : idx + self._traj_length]
+            return (obs, action, reward, discount, next_obs, timestep, rtg)
         return (obs, action, reward, discount, next_obs, timestep)
     def _sample_goal(self):
         episode = self._sample_episode()
@@ -205,6 +219,7 @@ def make_replay_loader(
     multi_task=False,
     relabel=True,
     obs="states",
+    return_to_go=False,
 ):
     max_size_per_worker = max_size // max(1, num_workers)
 
@@ -220,6 +235,7 @@ def make_replay_loader(
         cfg,
         relabel,
         obs,
+        return_to_go,
     )
 
     loader = torch.utils.data.DataLoader(
