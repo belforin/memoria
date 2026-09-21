@@ -153,6 +153,26 @@ al modelo a clonar comportamiento subóptimo).
   siempre el horizonte de 1000 pasos — consistente con que hopper es
   la tarea más inestable de las tres).
 
+### 2.1.1 Qué recibe el modelo como observación (sin imágenes)
+En Etapa 1 el modelo **no ve imágenes**: recibe el vector de estado
+propioceptivo crudo que trae cada `.hdf5` de D4RL (`d4rl_data.py` solo
+copia el array `observations`, sin procesarlo). Los módulos
+`agent/modules/pixel_encoder.py` e `impala_cnn.py` existen en el repo
+pero no se usan en este pipeline — están reservados para la Etapa 2
+visual (CoinRun/Procgen, ver §3).
+
+Siguiendo la convención estándar de Gym-MuJoCo (posición x del torso
+excluida del vector de observación), cada dimensión corresponde a:
+
+| Dataset | obs_dim | Contenido | action_dim | Contenido |
+|---|---|---|---|---|
+| halfcheetah | 17 | qpos[1:] (8: altura z + ángulo torso + 6 ángulos articulares: bthigh/bshin/bfoot/fthigh/fshin/ffoot) + qvel (9: vel. x/z del torso + vel. angular torso + 6 vel. angulares articulares) | 6 | torques continuos por articulación (bthigh, bshin, bfoot, fthigh, fshin, ffoot) |
+| hopper | 11 | qpos[1:] (5: altura z + ángulo torso + 3 ángulos articulares: thigh/leg/foot) + qvel (6: vel. x/z torso + vel. angular torso + 3 vel. angulares articulares) | 3 | torques continuos (thigh, leg, foot) |
+| walker2d | 17 | qpos[1:] (8: altura z + ángulo torso + 6 ángulos articulares: thigh/leg/foot × pierna izq/der) + qvel (9: vel. análogas) | 6 | torques continuos (thigh, leg, foot × pierna izq/der) |
+
+En resumen: es "espacio articulado" (ángulos + velocidades angulares del
+cuerpo simulado, más altura/velocidad del torso), no video ni imágenes.
+
 ### 2.2 Objetivo de entrenamiento
 Ya implementado: MSE entre acción predicha y acción real
 (`DTAgent.update_actor`), condicionado por return-to-go escalado
@@ -838,6 +858,167 @@ separado — en particular, la hipótesis de §2.6 predice que la
 normalización por sí sola (sin AdamW) ya debería destrabar el colapso de
 DT en halfcheetah, y que AdamW aportaría poco o nada encima de eso.
 
+### 2.9 Resultados — tanda con normalización de observaciones (jobs 25406-25417, 2026-09-15)
+
+Los 12 jobs de §2.8 (3 tareas × {DT, HDT} × {Adam simple, AdamW+warmup},
+todos con `obs_mean`/`obs_std` ya activos) terminaron `COMPLETED` sin
+errores (`sacct`, `ExitCode 0:0` los 12). Evaluados con `eval_dt.py` sobre
+el checkpoint final (`snapshot_100000.pt`), 10 episodios cada uno, mismo
+protocolo que §2.6 (`target_return` = primer target oficial de
+`kzl/decision-transformer` por tarea, video del primer episodio con
+`--save-video`). Logs en `eval_results/*_norm_{adam,adamw}.log`, videos en
+`videos/*_norm_{adam,adamw}.mp4`.
+
+**Duración de entrenamiento:**
+
+| Job ID | Corrida | Duración |
+|---|---|---|
+| 25406 | DT halfcheetah, Adam simple + norm | 0:55:53 |
+| 25407 | DT halfcheetah, AdamW+warmup + norm | 0:56:14 |
+| 25408 | HDT halfcheetah, Adam simple + norm | 1:54:49 |
+| 25409 | HDT halfcheetah, AdamW+warmup + norm | 1:55:17 |
+| 25410 | DT hopper, Adam simple + norm | 0:56:23 |
+| 25411 | DT hopper, AdamW+warmup + norm | 0:56:24 |
+| 25412 | HDT hopper, Adam simple + norm | 1:53:03 |
+| 25413 | HDT hopper, AdamW+warmup + norm | 1:52:53 |
+| 25414 | DT walker2d, Adam simple + norm | 1:00:59 |
+| 25415 | DT walker2d, AdamW+warmup + norm | 0:56:46 |
+| 25416 | HDT walker2d, Adam simple + norm | 1:53:15 |
+| 25417 | HDT walker2d, AdamW+warmup + norm | 1:54:34 |
+
+**Score normalizado D4RL (media ± desviación estándar, 10 episodios):**
+
+| Tarea | Agente | Adam simple + norm | AdamW+warmup + norm | Referencia paper (Medium-Expert) |
+|---|---|---|---|---|
+| halfcheetah | DT | **89.01 ± 4.49** | 71.52 ± 34.51 | 86.8 ± 1.3 |
+| halfcheetah | HDT | 61.41 ± 24.31 | 71.09 ± 23.51 | 86.8 ± 1.3 |
+| hopper | DT | 52.18 ± 5.66 | 60.13 ± 15.81 | 107.6 ± 1.8 |
+| hopper | HDT | 54.15 ± 7.11 | 54.67 ± 9.00 | 107.6 ± 1.8 |
+| walker2d | DT | 73.74 ± 20.87 | 76.58 ± 12.53 | 108.1 ± 0.2 |
+| walker2d | HDT | 76.69 ± 10.45 | 76.36 ± 11.41 | 108.1 ± 0.2 |
+
+**Comparación contra la tanda sin normalizar (§2.6, Adam simple, sin
+`obs_mean`/`obs_std`) — aísla el efecto de la normalización:**
+
+| Tarea | Agente | Sin norm (§2.6) | Con norm, Adam simple (§2.9) | Δ |
+|---|---|---|---|---|
+| halfcheetah | DT | 1.73 ± 0.01 | 89.01 ± 4.49 | **+87.28** |
+| halfcheetah | HDT | 90.44 ± 1.34 | 61.41 ± 24.31 | -29.03 |
+| hopper | DT | 50.27 ± 4.22 | 52.18 ± 5.66 | +1.91 |
+| hopper | HDT | 95.04 ± 26.18 | 54.15 ± 7.11 | -40.89 |
+| walker2d | DT | 76.86 ± 20.18 | 73.74 ± 20.87 | -3.12 |
+| walker2d | HDT | 75.77 ± 15.23 | 76.69 ± 10.45 | +0.92 |
+
+**Lectura de los resultados:**
+
+1. **Confirma la hipótesis de §2.8 para el caso que la motivó**: el
+   colapso de DT en halfcheetah desaparece por completo al normalizar
+   observaciones (score 1.73 → 89.01, con Adam simple, sin tocar el
+   optimizador) — queda al nivel del paper (86.8) y es el mejor resultado
+   de las 4 combinaciones para esa tarea. Esto aísla la causa: era la
+   falta de normalización, no el optimizador, exactamente como predijo el
+   diagnóstico de la curva de pérdida en §2.6.
+2. **AdamW+warmup no aporta de forma consistente una vez que ya hay
+   normalización** — mejora HDT halfcheetah (+9.7) y DT hopper (+7.9),
+   pero empeora bastante DT halfcheetah (-17.5, con una desviación
+   estándar muy alta: 34.51, es decir episodios sueltos con retorno casi
+   nulo entre episodios con retorno pleno) y es prácticamente neutro en
+   walker2d (ambos agentes) y HDT hopper. No hay un patrón de "AdamW
+   siempre ayuda" — su efecto parece dominado por varianza entre semillas
+   más que por una mejora sistemática, consistente con la predicción de
+   §2.6 de que el optimizador no era el mecanismo principal.
+3. **HDT no domina sistemáticamente a DT en esta tanda**, a diferencia de
+   §2.6: con normalización, DT iguala o supera a HDT en halfcheetah (Adam
+   simple) y hopper (ambos optimizadores), y quedan prácticamente
+   empatados en walker2d. La caída de HDT en halfcheetah (90.44 → 61.41
+   con Adam simple) es inesperada — normalizar debería ayudar o ser
+   neutro, no empeorar; candidato a revisar: una sola corrida por celda
+   (sin múltiples semillas todavía, ver punto 4) hace que no se pueda
+   distinguir varianza de semilla de un efecto real de la normalización
+   sobre la topología jerárquica.
+4. **Ninguna combinación alcanza el número del paper en hopper/walker2d**
+   (mejor caso: DT hopper AdamW 60.13 vs. 107.6 del paper; HDT walker2d
+   Adam 76.69 vs. 108.1) — a diferencia de halfcheetah DT, que sí lo
+   alcanza. Pendiente investigar si es un problema específico de esas dos
+   tareas (terminan episodio temprano al caerse, a diferencia de
+   halfcheetah) o si hace falta más presupuesto de entrenamiento.
+5. **Ninguna de estas corridas tiene todavía múltiples semillas** — el
+   protocolo de §2.4 pide media±std entre semillas, no entre episodios de
+   una sola semilla (que es lo que se reporta acá, igual que en §2.6).
+   Antes de sacar conclusiones firmes sobre DT vs. HDT o sobre el efecto
+   de AdamW hace falta repetir con ≥2 semillas adicionales por celda,
+   sobre todo dado el tamaño de algunas desviaciones estándar entre
+   episodios (p. ej. DT halfcheetah AdamW: 34.51).
+
+**Pendiente:** correr semillas adicionales (punto 5) antes de fijar una
+conclusión DT vs. HDT o Adam vs. AdamW; decidir si se sigue extendiendo el
+entrenamiento en hopper/walker2d (punto 4) para acercarse más al paper.
+
+### 2.10 Hallazgo — el return-to-go de entrenamiento estaba mal calculado (2026-09-21)
+
+Al revisar por qué hopper/walker2d quedaban 30-55 puntos bajo el paper (§2.9,
+punto 4) se comparó nuestro pipeline contra el código oficial de
+`kzl/decision-transformer` (`gym/experiment.py`, `seq_trainer.py`,
+consultados en GitHub el 2026-09-21). Dos diferencias en el return-to-go
+(rtg), la señal que define a Decision Transformer:
+
+1. **Ventana en vez de episodio.** `DTAgent.compute_returns_to_go` recibía
+   solo los K=20 pasos del batch, así que el rtg era la suma de rewards
+   dentro de la ventana y no hasta el final del episodio. El oficial usa
+   `discount_cumsum(traj['rewards'][si:], gamma=1.)`.
+2. **Descuento 0.99.** El `discount` del buffer (`pretrain_dt.yaml`,
+   `discount: 0.99`) es un default heredado de los agentes RL de MaskDP
+   (target del crítico), nunca una decisión para DT. El oficial usa
+   `gamma=1.` (sin descontar). Confirmado: no hay nada sobre descuento en
+   este documento.
+
+**Medición sobre hopper medium-expert (datos reales):** el rtg visto en
+entrenamiento llegaba como máximo a 0.099 (escalado ÷1000, media 0.058),
+mientras el retorno real de un episodio es 331-3759 (media 2109) y el
+`target_return` de evaluación es 3600 (3.6 escalado). El modelo nunca vio
+un rtg mayor a 0.1 y en evaluación se lo pedíamos 36 veces más grande; en
+entrenamiento tampoco distinguía episodios buenos de malos. Efectivamente
+era clonación de comportamiento sobre una mezcla medium+expert, lo que
+explica hopper ≈ 52-60 y que en §4.3 "return" casi no pesara. Afecta a
+TODOS los resultados de D4RL (DT y HDT, §2.6-§2.9) y también a CoinRun
+(§3), porque HDT hereda `update_actor`.
+
+**Corrección:** `OfflineReplayBuffer(return_to_go=True)` calcula al cargar
+cada episodio `rtg = cumsum inversa de reward` (sin descontar, episodio
+completo) y `_sample` lo devuelve como séptimo elemento;
+`DTAgent.update` lo exige (error explícito si falta) y `update_actor` lo
+recibe por `rtg=`. `pretrain_dt.py` y `pretrain_coinrun.py` lo activan.
+Verificado con el loader real: `rtg[t] - rtg[t+1] == reward[t]` y el rtg
+de entrenamiento ahora va de 0.011 a 3.26 (escalado), el mismo rango que el
+target de evaluación (3.6). `test_dt.py`/`test_hdt.py` pasan.
+
+**Otras diferencias con el oficial (sin corregir todavía, no verificadas
+como causa):** el oficial recorta el gradiente a 0.25 (`seq_trainer.py`, el
+código consultado sí lo confirma); nosotros no. Además, entrenamos solo con
+ventanas completas de 20 pasos (el oficial rellena y enmascara), muestreamos
+episodios uniformemente (el oficial, proporcional al largo) y nuestra
+arquitectura no tiene LayerNorm sobre los embeddings y usa ReLU en la
+cabeza de acción.
+
+**Re-entrenamiento lanzado (2026-09-21):** 18 jobs (28426-28443), Adam
+simple + normalización de obs, {DT, HDT} × {halfcheetah, hopper, walker2d}
+× semillas {1, 2, 3}. Scripts `pretrain_{dt,hdt}_<tarea>_rtgfix_s<seed>.sbatch`,
+snapshots en `~/snapshot/<tarea>_medium_expert_{dt,hdt}_rtgfix/<tarea>/<seed>/`.
+Se cambia solo el rtg (sin recorte de gradiente) para poder atribuir el
+efecto. **Pendiente:** evaluar con `eval_dt.py` y comparar contra §2.9 y el
+paper; decidir si se re-entrena CoinRun.
+
+#### Resultados de CoinRun previos a la corrección (jobs 28404/28405)
+
+Con el rtg defectuoso, snapshot 100000, 100 episodios por split, una semilla
+(tasa de éxito; el reward es binario 0/10): DT train 83% / val 76% / test
+74%; HDT train 91% / val 76% / test 83%. Videos en
+`eval_results/videos_coinrun_{dt,hdt}_100000/` (3 episodios por split, todos
+ganados). `eval_coinrun.py` ahora graba video con `--video-dir`. Curvas de
+`action_loss` al paso 100000: DT 1.498, HDT 1.279 (`BR` de los logs es
+`batch_reward`, el reward medio del batch del dataset, no una métrica del
+modelo).
+
 ## 3. Etapa 2 — Régimen visual (abierto, pendiente de decisión)
 
 Su Etapa II traslada el problema a CoinRun (Procgen) con un codificador
@@ -950,6 +1131,209 @@ reemplazo de `self.state_embed = nn.Linear(obs_dim, n_embd)` cuando la
 obs es de píxeles, y agregar la cabeza de acción discreta (softmax sobre
 15 logits + cross-entropy, en vez de `nn.Tanh()` + MSE) para CoinRun.
 
+### 3.1 Implementación completa y jobs encolados (2026-09-15)
+
+**Decisión previa de alcance:** el usuario recordó que Benjamín ya tenía
+"archivos muy similares" — se investigó su código real (no solo la
+mención en prosa de §0.1) en vez de diseñar desde cero: la rama
+`upstream/hier-procgen` de este mismo repo (`git fetch upstream
+hier-procgen`) tiene su pipeline visual completo (`agent/mdp.py`
+extendido con soporte de píxeles+acción discreta, `agent/mdp_bct.py`
+— agente de evaluación closed-loop paso a paso, el más análogo a
+DT/HDT porque no usa el Algoritmo 1 de enmascaramiento —, `eval_bct.py`).
+Se preguntó también si correspondía expandir a los ~9 juegos de Procgen
+que el usuario recordaba que Benjamín había probado: revisando
+`/home/bmancilla/archive/MaskDP/` (checkpoints, sarfa, encoders
+pretrained) todo lo encontrado ahí es CoinRun únicamente — un solo
+encoder pretrained, snapshots solo de coinrun, sarfa solo de coinrun.
+Sin evidencia en este cluster de otros juegos (podría estar en su
+informe/tesis, no accesible acá). **Decisión del usuario: seguir solo con
+CoinRun por ahora**, igual que Etapa 1 usó 3 de 7 tareas D4RL por
+cobertura — expandir a más juegos queda como paso siguiente si hace
+falta, requeriría descargar datasets y conseguir/entrenar un encoder
+pretrained por juego adicional.
+
+**Qué se adoptó literal del código de Benjamín** (`agent/mdp.py`/
+`mdp_bct.py`/`eval_bct.py`, rama `upstream/hier-procgen`):
+- Factory `PixelEncoder(obs_shape, feature_dim, encoder_type=...)` y
+  `load_procgen_impala(encoder, ckpt_path, freeze=True)` (ya copiadas en
+  `agent/modules/`, §3 más arriba) como reemplazo de `state_embed`/
+  `obs_encoder.embed` cuando la obs es de píxeles.
+- Acción discreta: `nn.Embedding(num_actions, n_embd)` con squeeze inline
+  (`action.long().squeeze(-1)` si trae dim final =1) antes de embeder, en
+  vez de una clase envoltorio nueva — mismo estilo que
+  `mdp.py::forward_encoder`.
+- Cabeza de acción discreta: logits crudos (`nn.Linear` sin `Tanh`),
+  softmax implícito dentro de `F.cross_entropy` (no afuera) — mismo
+  patrón que `mdp.py::action_head` discreto.
+- Splits de evaluación closed-loop y normalización: adoptados completos
+  de `eval_bct.py`, no inventados de nuevo — protocolo de Mediratta et
+  al. (ICLR 2024): `train` (`start_level=0, num_levels=200`, mismos
+  niveles que vio el dataset offline `level_200`), `val`
+  (`start_level=200, num_levels=50`, niveles nunca vistos de la misma
+  familia), `test` (`start_level=250, num_levels=0`, resto de la
+  distribución infinita — generalización real). Diccionario `PROCGEN` de
+  rango `(r_min, r_max)` por juego/dificultad para normalizar el retorno
+  (`coinrun`/`easy`: `(5, 10)` — confirmado empíricamente sobre el
+  dataset offline: reward binario 0/10 por episodio, media 9.55/10).
+  `procgen.ProcgenEnv` + wrapper `VecExtractDictObs` (copia literal de
+  `baselines.common.vec_env.VecExtractDictObs`) en vez de `gym.make`.
+
+**Qué se mantuvo distinto a propósito:** sin la arquitectura de dos
+dimensiones (`enc_n_embd` de encoders vs. `n_embd` de fusión) que tiene
+`mdp.py` — nuestro `dt.py`/`hdt.py` ya comparten un solo `n_embd` en toda
+la arquitectura; se fijó `n_embd=256` (coincide exacto con la proyección
+del checkpoint pretrained) tanto para DT como HDT, sin re-matchear
+paridad de parámetros DT/HDT en esta pasada (igual que Etapa 1, que lo
+resolvió en dos iteraciones). Sin `encoder_trainable`/fine-tuning (el
+encoder queda siempre congelado, no se necesita la generalidad completa
+de su optimizador con dos learning rates). Datos: `convert_coinrun_to_npz.py`
+sigue agregando la transición dummy al inicio de cada episodio (en vez de
+tocar `replay_buffer.py` como hizo Benjamín) — mismo problema, solución
+distinta, ya verificada.
+
+**Cambios de código** (`agent/dt.py`, `agent/hdt.py`,
+`agent/sequence_encoding.py`): `obs_shape` reemplaza a `obs_dim` (acepta
+int o tupla, retrocompatible con los tests existentes de D4RL que pasan
+un int); flags `discrete_actions`/`pixel_encoder_type`/
+`pretrained_encoder_path`/`label_smoothing` en `transformer_cfg`
+(default `False`/`None`/`0.0` vía `getattr`, no rompen `dt.yaml`/
+`hdt.yaml` de D4RL); `DTAgent.update_actor`/`act` con rama
+cross-entropy/argmax cuando `discrete_actions` (se heredan en `HDTAgent`
+sin tocar nada ahí). Verificado con `test_dt.py`/`test_hdt.py`/
+`test_sequence_encoding.py` (sin cambios de comportamiento para D4RL) más
+`test_dt_coinrun.py` (nuevo, config sintético `(32,32,3)` +
+`pretrained_encoder_path=None`, no depende del checkpoint real).
+
+**Cuatro bugs reales encontrados y corregidos durante la implementación**
+(todos vía smoke tests, antes de encolar):
+1. **`torchvision` faltante en `dt-env`.** `agent/dt.py` ahora importa
+   `agent/modules/pixel_encoder.py` incondicionalmente, que importaba
+   `torchvision` a nivel de módulo (solo lo usa `ResNetFrozenEncoder`,
+   encoder legacy no usado acá) — rompía `eval_dt.py` en `dt-env` (no
+   tiene `torchvision` instalado). Fix: import diferido de `torchvision`
+   dentro de `ResNetFrozenEncoder.__init__`.
+2. **`configure_optimizer` (`agent/dt.py`) no clasificaba `nn.Conv2d`.**
+   Solo reconocía `nn.Linear` como "decay"; el encoder IMPALA es todo
+   `nn.Conv2d`, así que la aserción final revienta apenas el modelo tiene
+   un encoder visual (congelado o no). Fix: (a) parámetros con
+   `requires_grad=False` se excluyen por completo de la clasificación
+   (nunca reciben gradiente, no necesitan grupo de weight decay); (b)
+   `nn.Conv1d/Conv2d/Conv3d` se agregan a `whitelist_modules` (decay)
+   para el caso de que el encoder se entrene sin congelar en el futuro.
+   Mismo fix que ya tiene `agent/mdp.py::_classify_params` de Benjamín.
+3. **Bug de orden de inicialización (encontrado leyendo `mdp.py`, y
+   confirmado real en nuestro propio HDT).** `self.apply(self.
+   _init_weights)` (llamado desde `initialize_weights()`) reinicializa con
+   `xavier_uniform_` CUALQUIER `nn.Linear` del árbol de submódulos,
+   incluida la proyección del encoder de píxeles ya cargada con pesos
+   pretrained — si el orden de construcción no es cuidadoso, lo pisa. En
+   `mdp.py` de Benjamín este bug está presente pero enmascarado
+   (`enc_n_embd=128 != 256` fuerza el fallback `ignore_proj=True`, la
+   proyección nunca se cargaba en primer lugar). Acá SÍ se manifestó: en
+   `HierarchicalDecisionTransformer`, `self.obs_encoder` (que ya carga y
+   congela su propio encoder en su propio `__init__`) se construye ANTES
+   de que el `self.initialize_weights()` de nivel superior corra
+   `self.apply(...)` sobre todo el árbol — confirmado con un test que
+   comparaba los pesos cargados contra el checkpoint real (`torch.allclose`
+   fallaba antes del fix). **Fix de raíz, no solo de orden**: `_init_weights`
+   (en `dt.py`, `hdt.py`, `sequence_encoding.py`) ahora salta cualquier
+   módulo cuyo `.weight.requires_grad` ya sea `False` (ya congelado/
+   pretrained) — así el invariante no depende de acertar el orden exacto
+   de construcción en cada composición de módulos.
+4. **`convert_coinrun_to_npz.py` preservaba el nombre crudo de gen_dgrl**
+   (ej. `20230329T085223_22588_20_81_10.00.npz`), pero
+   `replay_buffer.py::_load()` asume el formato `prefix_idx_len.npz`
+   exacto (3 partes separadas por `_`, las dos últimas enteras) — nunca se
+   había ejercitado este camino en la verificación previa de §3 (that
+   smoke test cargaba un episodio a mano, sin pasar por
+   `OfflineReplayBuffer`). Encontrado corriendo `pretrain_coinrun.py` de
+   punta a punta. Fix: renombrar a `episode_<idx>_<T>.npz` (misma
+   convención que `d4rl_data.py`) y re-correr la conversión completa
+   (14.348 episodios, mismo resultado que antes, solo cambia el nombre de
+   archivo).
+
+**Archivos nuevos**: `agent/dt_coinrun.yaml`/`agent/hdt_coinrun.yaml`
+(`n_embd=256`, `n_head=4`, `n_layer=3`/`n_obs_layer=n_act_layer=n_layer=3`,
+`traj_length=20`, `episode_length=1000` — verificado el máximo real sobre
+`data/coinrun/`, `return_scale=10` — reward binario 0/10 confirmado
+empíricamente, `discrete_actions=true`, `num_actions=15`,
+`pretrained_encoder_path` relativo por default, pasado absoluto por CLI
+en los sbatch porque hydra cambia el cwd); `pretrain_coinrun.py` +
+`pretrain_coinrun.yaml` (copia adaptada de `pretrain_dt.py`, sin
+`compute_obs_stats` — no aplica a píxeles); `pretrain_dt_coinrun.sbatch`/
+`pretrain_hdt_coinrun.sbatch`; `eval_coinrun.py` (puerto de
+`eval_bct.py`/`mdp_bct.py` a `DTAgent`/`HDTAgent`); `test_dt_coinrun.py`.
+
+**Conteo de parámetros** (con la config de arriba, calculado localmente
+antes de encolar, útil para discutir en el informe cuánto del modelo es
+realmente entrenable vs. heredado del encoder pretrained congelado):
+
+| Modelo | Total | Entrenables | Congelados (encoder IMPALA) | % congelado |
+|---|---|---|---|---|
+| DT (n_embd=256, n_layer=3) | 3.256.143 | 2.633.999 | 622.144 | 19,1% |
+| HDT (n_embd=256, n_obs=n_act=n_top=3) | 8.506.703 | 7.884.559 | 622.144 | 7,3% |
+
+El encoder congelado (622.144 parámetros: convnet IMPALA + proyección a
+256) es idéntico en ambos modelos, ya que ninguno lo reentrena — la
+diferencia de tamaño total entre DT y HDT (3,26M vs. 8,51M) es enteramente
+por la arquitectura del stack transformer (HDT duplica el trabajo con dos
+sub-encoders T_obs/T_act antes del stack superior, DT no). **No hay
+paridad de parámetros entrenables entre DT y HDT en esta etapa** (a
+diferencia de la Etapa 1, §1): HDT entrena ~3x más parámetros que DT
+(7,88M vs. 2,63M) — queda documentado como diferencia conocida, no
+corregida todavía (ver "Qué se mantuvo distinto a propósito" más arriba,
+por qué forzar paridad ahora perdería la carga directa del encoder
+pretrained).
+
+**Entorno `procgen-env`**: se intentó `conda create --clone
+/home/bmancilla/miniconda3/envs/maskdp_procgen` (env ya verificado
+funcionando headless en este cluster) pero falló instalando un paquete
+(`scipy`) a mitad de transacción y quedó en rollback; una limpieza
+concurrente (`rm -rf` lanzado creyendo que el clonado estaba
+simplemente colgado, en vez de leer el log de la tarea en background)
+corrompió más el directorio. Se rehizo desde cero, más liviano: env nuevo
+(`python=3.8.20`) + `pip install torch==1.13.1+cpu` (CPU-only alcanza,
+este env solo hace inferencia para el rollout, el entrenamiento corre en
+`maskdp-env` vía SLURM/GPU) + `procgen==0.10.7`/`gym3==0.3.3`/
+`numpy==1.23.5` (mismas versiones ya probadas) + `omegaconf` (dependencia
+de `utils.py`). Verificado con el mismo smoke test headless
+(`procgen.ProcgenEnv(...).reset()`/`.step()`) y con `eval_coinrun.py` de
+punta a punta contra snapshots dummy de DT y HDT (2 episodios, 30 pasos,
+checkpoint con 2 pasos de gradiente — solo para validar que el pipeline
+corre, no resultados).
+
+**Verificación previa a encolar** (mismo criterio que Etapa 1): smoke
+test de `pretrain_coinrun.py` en CPU (2 pasos de gradiente, batch_size=2,
+subconjunto de 300 episodios para no toparse con el límite de memoria
+virtual de la sandbox de esta sesión — el job real en SLURM pide
+`--mem=64G`, muy por encima de lo que pesa el dataset completo
+descomprimido) para `agent=dt_coinrun` y `agent=hdt_coinrun`, ambos con
+el checkpoint pretrained real — corren sin errores, el encoder queda
+congelado y con los pesos reales del checkpoint (verificado con
+`torch.allclose` contra el archivo, no solo que no lance error). Luego
+`eval_coinrun.py` de punta a punta contra esos snapshots dummy, en
+`procgen-env`, split `train`, 2 episodios — corre sin errores (retorno
+0.00 esperable, checkpoint casi sin entrenar).
+
+**Jobs encolados** (2026-09-15, `--nodelist=hydra`, pendientes por
+recursos al encolar):
+
+| Job ID | Corrida | Snapshot dir |
+|---|---|---|
+| 27107 | DT coinrun | `~/snapshot/coinrun_dt/` |
+| 27108 | HDT coinrun | `~/snapshot/coinrun_hdt/` |
+
+100.010 pasos cada uno (`num_grad_steps` default de `pretrain_coinrun.yaml`),
+`batch_size=64`, dataset completo (14.348 episodios, `data/coinrun/`).
+
+**Evaluación (2026-09-21):** hecha con `eval_coinrun.py` (env
+`procgen-env`, torch solo CPU) sobre los snapshots de 100000, 3 splits ×
+2 agentes, 100 episodios por split (jobs 28404/28405). Resultados en §2.10,
+marcados como previos a la corrección del return-to-go: los dos
+entrenamientos de CoinRun usaron el rtg defectuoso, así que hay que decidir
+si se re-entrenan.
+
 ## 4. Etapa 3 — Interpretabilidad (AttAttr / SARFA), con adaptaciones
 
 Los dos métodos son trasladables en principio, pero requieren ajustes
@@ -976,6 +1360,261 @@ espacio de acción es continuo, no discreto:
   de cambio en probabilidad), o (b) usar un método de saliencia por
   perturbación distinto pensado para regresión. Esto es trabajo de diseño
   metodológico propio, no una adaptación mecánica.
+
+### 4.1 Diseño de la adaptación a acción continua (2026-09-09, sin implementar todavía)
+
+Ambos métodos necesitan un objetivo escalar (o por dimensión) sobre el
+cual atribuir, ya que DT/HDT devuelven un vector de acción continuo vía
+`nn.Tanh()` — no hay softmax ni logit argmax del que partir.
+
+**AttAttr:**
+- Objetivo de atribución: en vez del logit de la clase argmax, usar la
+  acción predicha en la dimensión `j` de interés, `a_pred[j]` (escalar),
+  y aplicar la integral de gradientes de Hao et al. 2021 sobre los pesos
+  de atención `A_h` del stack objetivo (ya resuelto cuál stack usar, ver
+  bullet anterior):
+  `Attr_h(A) = A_h ⊙ (1/m) Σ_{k=1}^{m} ∂a_pred[j](k/m · A_h) / ∂A_h`
+- **Por dimensión, no agregado desde el inicio**: cada dimensión de
+  acción corresponde a una articulación físicamente distinta (un torque
+  de un joint). Promediar/agregar antes de tiempo mezclaría atribuciones
+  de señales potencialmente independientes o de signo opuesto y taparía
+  la pregunta más interesante ("¿el modelo mira el frame correcto del
+  pasado para decidir el torque de ESTA articulación?"). Para una cifra
+  resumen (p. ej. comparar DT vs. HDT en agregado) se puede normalizar-L2
+  las atribuciones por dimensión después, pero el análisis primario es
+  por dimensión.
+- `m` (pasos de integración): partir de `m=20` (valor típico del paper
+  original) y verificar convergencia empírica (la atribución no debería
+  cambiar apreciablemente si se duplica `m`); si cambia, subir a
+  `m=50-100`.
+
+**SARFA (reformulación completa, no es una adaptación mecánica):**
+La intuición central de Puri et al. 2020 — "una región es importante si
+perturbarla cambia mucho la salida de interés, y específicamente esa
+salida, no todo por igual" — sí se traslada, pero hay que redefinir
+specificity/relevance sin distribución softmax:
+
+- **Unidad de perturbación**: en Etapa 1 no hay imagen, así que en vez de
+  parches de píxeles se perturban **tokens de la secuencia de entrada**
+  (un `state_t`, `action_t` o `return_t` completo dentro de la ventana de
+  contexto), reemplazándolo por su valor medio — que es 0, dado que las
+  obs ya están normalizadas (hallazgo §2.8). Esto da un mapa de saliencia
+  "qué paso pasado importó para la acción de hoy", comparable en espíritu
+  al mapa de atención de AttAttr — permite **cruzar ambos métodos como
+  validación cruzada** (ver más abajo), igual que en el trabajo de
+  referencia.
+- Sea `a` la acción predicha sin perturbar, `a'(r)` la acción predicha
+  perturbando la región `r`, `Δa(r) = a'(r) - a`, y `j` la dimensión de
+  acción de interés:
+  - **Specificity_j(r)** = `|Δa_j(r)|` normalizado min-max contra todas
+    las regiones candidatas `r'` del mismo estado (mismo criterio de
+    normalización que usan métodos de saliencia por oclusión en RL, p.
+    ej. Greydanus et al. 2018) → qué tan grande es el efecto de ESTA
+    región sobre la dimensión `j`, relativo a las demás regiones.
+  - **Relevance_j(r)** = `|Δa_j(r)| / (‖Δa(r)‖₁ + ε)` → qué fracción del
+    cambio total de acción se concentra en la dimensión `j` (análogo
+    directo a "el cambio es específico de `a*`, no se reparte entre las
+    demás acciones" del paper original — ahí eran probabilidades
+    discretas, acá es masa de cambio repartida entre dimensiones
+    continuas).
+  - **SARFA_j(r)** = media armónica(Specificity_j(r), Relevance_j(r)),
+    misma fórmula de fusión que el método original.
+- Igual que en AttAttr, el análisis primario es por dimensión `j`;
+  agregación L2 solo para cifras resumen.
+
+**Validación cruzada de ambos métodos (paso adicional, no estaba en el
+plan original):** como estamos rediseñando ambos métodos desde cero (no
+es una traslación mecánica de código ya probado), conviene verificar que
+AttAttr y SARFA coincidan cualitativamente en qué timesteps pasados
+marcan como importantes para el mismo checkpoint/episodio antes de
+confiar en los resultados para el análisis DT vs. HDT — si divergen
+sistemáticamente, alguno de los dos diseños tiene un problema y hay que
+revisarlo antes de seguir.
+
+**Abierto (decidir antes de implementar):** qué dimensión de acción
+mostrar cuando se reporte un caso de estudio único en el informe (p. ej.
+la de mayor varianza entre episodios, o la que más correlaciona con el
+retorno) — no bloquea la implementación del método en general, solo la
+elección de qué mostrar como ejemplo.
+
+### 4.2 AttAttr — implementado y validado (2026-09-09)
+
+Implementado en `attattr.py` (nuevo, corre en `maskdp-env`, no depende de
+`eval_dt.py`/gym/mujoco_py: toma la ventana de contexto directamente de
+un episodio ya convertido en `data/<task>_medium_expert/<task>/`, con la
+misma convención de alineación que `OfflineReplayBuffer._sample`). El
+parche de `CausalSelfAttention.forward` descrito en §4.1 se hace en
+tiempo de ejecución sobre la instancia cargada, sin tocar
+`agent/modules/attention.py`.
+
+Validado contra el checkpoint HDT halfcheetah de la primera tanda
+(`~/snapshot/halfcheetah_medium_expert_hdt/halfcheetah/1/snapshot_100000.pt`,
+job 25130, score 90.44 en §2.6 — elegido por ser un checkpoint ya
+conocido como "bueno", sin esperar a que termine la tanda actual de
+walker2d):
+
+1. **La reimplementación parcheada es fiel**: corriendo el forward
+   parcheado con `alpha=1` (sin intervención real) sobre las 3 capas del
+   stack, la salida es idéntica a la del modelo sin parchear
+   (`max |diff| = 0.0` en `pred_a`) — descarta que el parche esté
+   alterando el cómputo real antes de usarlo para atribución.
+2. **Sensibilidad al target**: atribuir `target_dim=0` vs. `target_dim=1`
+   da patrones de atribución claramente distintos por capa (confirma que
+   el gradiente sí depende de qué dimensión de acción se pide, como debe
+   ser — no es una constante que ignora `target_dim`).
+3. **Convergencia en `m`**: los valores top de atribución cambian <3%
+   entre `m=20` y `m=40` (p. ej. capa 0, t=10/return: 0.002575 vs.
+   0.002516) → `m=20` (el default del paper original) ya es suficiente
+   acá, no hace falta subir a 50-100.
+
+Pendiente: implementar SARFA (§4.1) y correr la validación cruzada entre
+ambos métodos propuesta ahí, antes de usar cualquiera de los dos para
+conclusiones DT vs. HDT. La corrida "oficial" para el informe se hace
+sobre los checkpoints finales una vez termine Etapa 1 (§2.8) — esto de
+acá es solo la validación de que la implementación es correcta.
+
+### 4.3 SARFA — implementado y validado; hallazgo: NO cross-valida con AttAttr (2026-09-15)
+
+Implementado en `sarfa.py` (nuevo, corre en `maskdp-env`, reusa
+`OBS_ACTION_DIMS`/`load_agent`/`load_window` de `attattr.py` para operar
+sobre exactamente la misma ventana/checkpoint que AttAttr y poder
+cruzarlos). Sigue el diseño de §4.1: unidad de perturbación = un token
+completo de la secuencia intercalada (`R_t`, `s_t` o `a_t`), reemplazado
+por su "valor neutro" — para el estado, el buffer `model.obs_mean` (así
+que, tras la normalización z-score interna del modelo, el valor que
+efectivamente ve la red es 0, ver §2.8/§4.1); para return-to-go y acción,
+0.0 directo (no hay normalización de por medio para esas dos modalidades
+en el pipeline). Candidatos = posiciones `0..query_idx` inclusive
+(`query_idx = 3(T-1)+1`, el token de estado del último timestep) — el
+propio token de acción objetivo (`a_{T-1}`) queda excluido, la máscara
+causal ya lo bloquea de influir sobre sí mismo.
+
+**Validación de la implementación** (mismo checkpoint que §4.2,
+`halfcheetah_medium_expert_hdt/.../snapshot_100000.pt`, job 25130):
+1. **Determinismo**: dos corridas de `sarfa()` sobre la misma
+   ventana/target dan resultados idénticos.
+2. **Máscara causal**: perturbar el token `a_{T-1}` (fuera del rango de
+   candidatos, el que la máscara causal ya bloquea) da `diff=0.0` exacto
+   en la predicción — confirma que `query_idx` está bien calculado y que
+   la implementación respeta la causalidad del modelo.
+3. **Sensibilidad al target**: `target_dim=0` vs. `target_dim=1` dan
+   top-5 completamente distintos (mismo criterio que AttAttr en §4.2).
+4. **Magnitudes no triviales**: `Δa` finito, con máximo ~1.04 (escala
+   razonable para una salida `Tanh`-acotada en `[-1,1]`).
+
+**Validación cruzada contra AttAttr (§4.1, paso pre-registrado antes de
+confiar en cualquiera de los dos métodos): el resultado es negativo.**
+Corrida sobre 9 ventanas (3 episodios × 3 posiciones de inicio,
+`halfcheetah_medium_expert`, mismo checkpoint HDT, `target_dim=0`):
+
+| Comparación | Resultado |
+|---|---|
+| Correlación de Spearman por posición (AttAttr agregado sobre capas+heads vs. SARFA) | media **-0.075 ± 0.443**, rango [-0.673, 0.668] — sin relación confiable |
+| Correlación por capa individual (0/1/2, sin agregar) | media ≈0 ± 0,24–0,39 en las tres — agregar capas no es la causa de la divergencia |
+| Acuerdo en qué **modalidad** domina (return/state/action, nivel más grueso) | **3/9 (33%)** — exactamente el nivel de azar para 3 categorías |
+
+Es decir: la divergencia no es un artefacto de cómo se agregan las capas
+de AttAttr (se probó agregado y por capa, mismo resultado), ni depende de
+la ventana particular elegida (se probó en 9 combinaciones episodio×
+posición, con signo de la correlación cambiando de ventana en ventana).
+**Los dos métodos, tal como están diseñados hoy, no coinciden de forma
+confiable en qué timesteps pasados importan para la predicción de
+acción.**
+
+**Patrón observado (pista, no conclusión):** SARFA señala "state" como
+modalidad dominante en 7 de 9 ventanas; AttAttr está mucho más disperso
+entre return/state/action. Hipótesis más plausible: los tokens de
+return-to-go dentro de una ventana de 20 pasos son altamente redundantes
+entre sí (`R_t` es una secuencia suavemente decreciente, cada valor es
+casi reconstruible a partir de sus vecinos) — el modelo podría aprender a
+"atender" mucho a esas posiciones estructuralmente (atención alta →
+AttAttr alto), sin que ablacionar una posición individual cambie mucho la
+salida porque las posiciones vecinas cargan información casi equivalente
+(especificidad baja → SARFA bajo). Esto es consistente con una tensión ya
+documentada en la literatura de interpretabilidad de atención en NLP
+(Jain & Wallace 2019 "Attention is not Explanation"; Serrano & Smith 2019)
+— atribución basada en pesos de atención y saliencia basada en oclusión
+miden nociones de "importancia" distintas y no siempre coinciden, incluso
+cuando ambas implementaciones son individualmente correctas (como acá,
+ver validaciones arriba).
+
+**Consecuencia para el plan (§4.1 ya anticipaba este escenario):** no se
+puede usar ninguno de los dos métodos todavía para sacar conclusiones
+DT vs. HDT — haría falta, antes de eso, decidir con el usuario alguna de:
+1. Aceptar que miden cosas distintas y reportar ambos por separado en el
+   informe, con esta limitación documentada explícitamente (no pretender
+   que se validan mutuamente).
+2. Investigar más a fondo el porqué de la divergencia (p. ej. medir la
+   redundancia real entre tokens de return vecinos, o probar SARFA con
+   perturbación de *grupos* de tokens en vez de uno a la vez, para ver si
+   ablacionar el return-to-go completo — no un solo token — sí tiene
+   efecto grande, lo que confirmaría la hipótesis de redundancia).
+3. Repetir la validación cruzada sobre DT (no solo HDT) y sobre
+   checkpoints de mejor calidad (una vez haya más semillas, §2.9) para
+   ver si el patrón es propio de este checkpoint/topología o general.
+
+Ninguna opción está descartada ni elegida — queda pendiente de decisión
+antes de usar estos métodos para el análisis de interpretabilidad final.
+
+**En curso (2026-09-15, decisión del usuario tras revisar el hallazgo
+anterior):** probar la opción 2 de arriba — la hipótesis de redundancia
+entre tokens de return vecinos. Diseño del experimento: en vez de
+ablacionar un token de una modalidad a la vez (como hace `sarfa()`),
+ablacionar TODOS los tokens de esa modalidad a la vez dentro de la
+ventana (`group_ablation()`, nuevo en `sarfa.py`) y comparar el efecto
+conjunto (`|Δa_j|` al sacar todo el grupo) contra la suma/máximo de los
+efectos individuales ya medidos por `sarfa()`. Si la hipótesis de
+redundancia es correcta, "return" debería mostrar un efecto de grupo
+desproporcionadamente más grande que la suma de sus efectos individuales
+(cada uno solo, casi no importa; todos juntos, sí) — mientras que
+"state"/"action" (con menos redundancia interna esperada, cada paso lleva
+información más única) no deberían mostrar el mismo patrón tan marcado.
+Se corre sobre las mismas 9 ventanas usadas en la validación cruzada de
+arriba, para que sea comparable.
+
+**Resultado (`group_ablation()`, mismas 9 ventanas, `target_dim=0`,
+promedio):**
+
+| Modalidad | Efecto de grupo `\|Δa_j\|` (media) | Máximo efecto individual (media) | Razón grupo/máx. individual |
+|---|---|---|---|
+| return | 0,0265 | 0,0040 | **5,37 ± 4,26** |
+| action | 0,1113 | 0,0654 | 2,57 ± 1,84 |
+| state | 0,8859 | 0,8421 | **1,07 ± 0,61** |
+
+**La hipótesis se confirma parcialmente, con un matiz importante que
+cambia la conclusión.** "return" sí es la modalidad más redundante por
+lejos (sacar todos los tokens de retorno juntos pesa ~5,4× más que sacar
+el más importante de ellos solo — cada uno individual aporta poco porque
+sus vecinos cargan información casi equivalente, exactamente el patrón
+esperado). "state" no muestra casi nada de este efecto (razón ≈1,07): no
+hay redundancia entre los tokens de estado, sacar todos junto pesa casi
+lo mismo que sacar solo el más importante — es decir, probablemente hay
+un único estado (el más reciente) que ya concentra casi toda la
+información relevante.
+
+Pero **el efecto absoluto de "return" (incluso sacándolo TODO junto,
+0,0265) sigue siendo ~33× más chico que el efecto de "state" (0,886)**.
+Es decir: la redundancia de "return" es real, pero no alcanza para
+explicar por qué AttAttr lo marca como la modalidad más importante en
+varias ventanas — en términos de cuánto cambia realmente la predicción,
+"state" domina con enorme margen incluso después de corregir por
+redundancia. **La hipótesis de redundancia explica una parte del
+fenómeno (por qué SARFA individual subestima "return") pero no explica
+por qué AttAttr lo sobreestima tanto** — ahí sigue habiendo una pregunta
+abierta, probablemente relacionada con que la atención puede usar los
+tokens de retorno como una especie de "ancla" posicional/estructural sin
+que eso se traduzca en un efecto causal real sobre la salida (que es
+justamente lo que mide SARFA).
+
+**Conclusión actualizada:** con esta evidencia, **"state" parece ser la
+señal genuinamente más importante para la predicción de acción** — tanto
+en SARFA individual como en el efecto de grupo, por un margen grande y
+consistente. La discrepancia con AttAttr no queda resuelta del todo, pero
+ahora hay una pista concreta de por dónde sigue (atención como
+estructura vs. atención como causa) en vez de un misterio sin explicar.
+Sigue pendiente de decisión con el usuario cómo proceder (ver las 3
+opciones más arriba) antes de usar cualquiera de los dos métodos para
+una conclusión DT vs. HDT — pero ahora con más elementos para decidir.
 
 ## 5. Selección de variante HDT de referencia
 
@@ -1023,7 +1662,12 @@ convertidos viven en `data/<dataset>/<domain>/episode_*.npz`
    reemplazados por 12 jobs (25406-25417, §2.8) que cruzan
    {Adam simple, AdamW+warmup} × {DT, HDT} × {halfcheetah, hopper,
    walker2d}, todos con la normalización ya activa, para aislar el efecto
-   de cada cambio por separado — evaluación pendiente.
+   de cada cambio por separado — evaluados en §2.9 (2026-09-15): la
+   normalización sola resuelve el colapso de DT en halfcheetah (1.73 →
+   89.01), AdamW no aporta de forma consistente encima de la
+   normalización, y ninguna combinación alcanza el número del paper en
+   hopper/walker2d. Falta repetir con más semillas antes de una
+   conclusión firme DT vs. HDT.
 5. [x] Extender el entrenamiento/evaluación a hopper y walker2d bajo el
    mismo protocolo (§2.4). Completado con dataset y config matcheados
    (§2.5.1, reemplaza el intento anterior sobre `-expert-v2`, jobs
@@ -1032,6 +1676,38 @@ convertidos viven en `data/<dataset>/<domain>/episode_*.npz`
 6. [x] Decidir si la Etapa 2 (régimen visual) entra en el alcance del
    trabajo. Decisión: sí entra, apoyándonos en la infraestructura de
    Benjamín (dataset CoinRun ya convertible, encoder IMPALA pretrained).
-   Plan concreto en §3, a implementar después de terminar Etapa 1.
-7. [ ] Diseñar la adaptación de AttAttr/SARFA a acción continua antes de
-   empezar la Etapa 3.
+   Implementado en §3.1 (2026-09-15): soporte de píxeles+acción discreta
+   en `dt.py`/`hdt.py` (basado en el código real de Benjamín, rama
+   `upstream/hier-procgen`), jobs 27107 (DT)/27108 (HDT) encolados sobre
+   CoinRun (único juego, decisión confirmada con el usuario) —
+   evaluación closed-loop hecha (§2.10), pero sobre entrenamientos con el
+   return-to-go defectuoso: pendiente decidir si se re-entrenan.
+7. [x] Diseñar la adaptación de AttAttr/SARFA a acción continua antes de
+   empezar la Etapa 3. Diseño completo en §4.1 (2026-09-09): AttAttr con
+   objetivo `a_pred[j]` por dimensión de acción; SARFA reformulado por
+   completo con perturbación de tokens de la secuencia (no hay imagen en
+   Etapa 1) y specificity/relevance redefinidos sin distribución softmax.
+   AttAttr implementado y validado en §4.2. SARFA implementado, validado
+   individualmente (determinismo, máscara causal, sensibilidad al target)
+   y cruzado contra AttAttr en §4.3 (2026-09-15) — **hallazgo: no
+   cross-validan** (Spearman por posición ≈0 ± 0,44 sobre 9 ventanas,
+   acuerdo de modalidad dominante 3/9 = nivel de azar). No es un bug de
+   implementación (ambos pasan sus propias validaciones por separado);
+   hipótesis más plausible es que miden nociones de importancia distintas
+   (atención vs. oclusión), tensión ya documentada en la literatura de
+   interpretabilidad. **Pendiente de decisión con el usuario** antes de
+   usar cualquiera de los dos para conclusiones DT vs. HDT (opciones en
+   §4.3).
+8. [x] Revisar el pipeline contra el código oficial de Decision Transformer
+   por la brecha en hopper/walker2d (§2.10, 2026-09-21). Hallazgo: el
+   return-to-go de entrenamiento se calculaba sobre la ventana de 20 pasos y
+   descontado (0.99), en vez de sobre el episodio completo y sin descontar;
+   corregido en `replay_buffer.py`/`agent/dt.py`.
+9. [ ] Re-entrenamiento con el rtg corregido: 18 jobs (28426-28443), Adam
+   simple + norm obs, {DT, HDT} × 3 tareas × semillas {1, 2, 3}. Luego
+   evaluar con `eval_dt.py`, comparar contra §2.9 y el paper, y reportar
+   media ± desviación entre semillas (§2.4).
+10. [ ] Decidir si se aplican las otras diferencias con el oficial
+   (recorte de gradiente 0.25, ventanas cortas con máscara, muestreo
+   proporcional al largo, arquitectura) si hopper/walker2d siguen lejos del
+   paper, y si se re-entrena CoinRun con el rtg corregido.
