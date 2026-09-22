@@ -1006,7 +1006,18 @@ simple + normalización de obs, {DT, HDT} × {halfcheetah, hopper, walker2d}
 snapshots en `~/snapshot/<tarea>_medium_expert_{dt,hdt}_rtgfix/<tarea>/<seed>/`.
 Se cambia solo el rtg (sin recorte de gradiente) para poder atribuir el
 efecto. **Pendiente:** evaluar con `eval_dt.py` y comparar contra §2.9 y el
-paper; decidir si se re-entrena CoinRun.
+paper.
+
+**CoinRun también re-entrenado (2026-09-21):** decidido re-entrenar en vez
+de solo re-evaluar, porque el bug de rtg afecta el objetivo de
+entrenamiento en sí (§2.10), no solo la evaluación — un snapshot entrenado
+con rtg roto no se arregla evaluándolo distinto. `pretrain_coinrun.py` ya
+pasaba `return_to_go=True` desde el fix, así que alcanzó con relanzar sin
+tocar código: jobs 28457 (DT) / 28458 (HDT), mismo protocolo que 27107/
+27108 (semilla 1, single-seed, único juego confirmado con el usuario en el
+punto 6), snapshots en `~/snapshot/coinrun_{dt,hdt}_rtgfix/`. Pendiente:
+evaluar con `eval_coinrun.py` (tasa de éxito por split) una vez terminen y
+comparar contra §3 (resultados con el rtg defectuoso, más abajo).
 
 #### Resultados de CoinRun previos a la corrección (jobs 28404/28405)
 
@@ -1018,6 +1029,141 @@ ganados). `eval_coinrun.py` ahora graba video con `--video-dir`. Curvas de
 `action_loss` al paso 100000: DT 1.498, HDT 1.279 (`BR` de los logs es
 `batch_reward`, el reward medio del batch del dataset, no una métrica del
 modelo).
+
+#### Resultados de CoinRun tras la corrección (jobs 28685/28686, evaluados 2026-09-22)
+
+Reentrenamiento completado (28685 DT, 28686 HDT, ambos `COMPLETED`, ~2h cada
+uno) y evaluado con `eval_dt_coinrun_rtgfix.sbatch`/`eval_hdt_coinrun_rtgfix.sbatch`
+(jobs 28839/28840, snapshot 100000, 100 episodios por split, semilla 1,
+`--video-dir`). Score normalizado por split (retorno normalizado a [0,1]
+vía la tabla `PROCGEN["coinrun"]["easy"] = (5, 10)`, no la tasa de éxito
+binaria de la tanda anterior, para que sea comparable con el score D4RL de
+§2.12):
+
+| split | DT | HDT |
+|---|---|---|
+| train | 0.780 ± 0.626 | 0.680 ± 0.733 |
+| val   | 0.280 ± 0.960 | 0.660 ± 0.751 |
+| test  | 0.400 ± 0.917 | 0.620 ± 0.785 |
+
+**Lectura:** DT memoriza mejor los niveles de entrenamiento (0.78 vs. 0.68)
+pero se degrada fuerte fuera de distribución (val 0.28, test 0.40, caída de
+~0.4-0.5 puntos); HDT generaliza mejor a val/test (0.66/0.62, caída de solo
+~0.02-0.06 puntos respecto a train) aunque parte más abajo en train. Es la
+primera comparación DT vs. HDT en el régimen visual con el rtg corregido —
+consistente con la hipótesis de que la jerarquía de HDT ayuda a generalizar
+más que a memorizar. Un solo seed por agente (§0.1, decisión confirmada con
+el usuario de single-seed para CoinRun), así que la desviación reportada es
+entre episodios, no entre semillas como en §2.12 — no se puede descartar
+que parte de la diferencia sea varianza de semilla.
+
+Videos (3 episodios por split, incluye derrotas: `ep00_ret0.mp4` en DT
+test) en `eval_results/videos_coinrun_{dt,hdt}_rtgfix_100000/{train,val,test}/`.
+Logs completos en `eval_results/coinrun_{dt,hdt}_rtgfix_100000.log`. Sin
+errores en ninguno de los 2 jobs.
+
+### 2.11 Detalle verificado de las otras 4 diferencias con el oficial (mientras se espera §2.9→§9, 2026-09-21)
+
+Mientras los 18 jobs del punto 9 esperan recursos en el cluster, se revisó
+con más detalle el código oficial (`kzl/decision-transformer`,
+`gym/experiment.py`, `gym/decision_transformer/training/seq_trainer.py`,
+`gym/decision_transformer/models/decision_transformer.py`, consultados
+2026-09-21) para dejar listo el diagnóstico de costo/riesgo de cada
+diferencia del punto 10, antes de decidir cuáles aplicar:
+
+1. **Recorte de gradiente 0.25.** Confirmado en `seq_trainer.py`:
+   `torch.nn.utils.clip_grad_norm_(self.model.parameters(), .25)` justo
+   después de `loss.backward()` y antes de `optimizer.step()`. Costo:
+   trivial (una línea en `DTAgent.update`). Riesgo: bajo.
+2. **`LayerNorm` sobre los embeddings apilados, antes del transformer.**
+   Confirmado en `decision_transformer.py`: `self.embed_ln =
+   nn.LayerNorm(hidden_size)` se aplica sobre `stacked_inputs` (R,s,a
+   intercalados) antes de entrar al GPT2. Verificado que
+   `DecisionTransformer.forward` (`agent/dt.py:191-240`) no tiene nada
+   equivalente — arma `x` (intercalado R/s/a) y lo pasa directo a
+   `self.blocks`, sin normalizar. Costo: trivial (un `nn.LayerNorm` más su
+   aplicación en `forward`). Riesgo: bajo, pero cambia la escala de
+   entrada a todas las capas — hay que re-entrenar para medir el efecto,
+   no combinar con snapshots viejos.
+   (La cabeza de acción **sí** termina en `Tanh` en ambos — lo que decía
+   el punto 10 sobre "usa ReLU" es la capa oculta del head de 2 capas
+   nuestro, `Linear→LayerNorm→ReLU→Linear→Tanh` vs. el `Linear→Tanh` de
+   una sola capa del oficial; no es un bug, es una diferencia de
+   capacidad del head. Se deja fuera de la lista de cambios porque no hay
+   evidencia de que sea la causa de la brecha.)
+3. **Muestreo de episodios proporcional al largo.** Confirmado en
+   `experiment.py`: `p_sample = traj_lens[...] / sum(traj_lens[...])` y
+   `np.random.choice(..., p=p_sample)` pesa cada trayectoria por su
+   duración. Nuestro `OfflineReplayBuffer._sample_episode`
+   (`replay_buffer.py:119-124`) usa `random.choice(self._episode_fns)`,
+   uniforme por episodio. Costo: moderado (precalcular pesos por largo de
+   episodio, pasarlos a `random.choices`/`np.random.choice`). Riesgo:
+   bajo, cambio localizado.
+4. **Ventanas parciales con padding + máscara de atención.** Confirmado en
+   `experiment.py`: `si = random.randint(0, len(traj)-1)` puede caer cerca
+   del final, dando una ventana más corta que `K`, que se rellena con
+   ceros (padding a la izquierda) y se marca con `attention_mask`;
+   `seq_trainer.py` excluye las posiciones enmascaradas de la loss.
+   Nuestro `OfflineReplayBuffer._sample` (`replay_buffer.py:129-140`)
+   fuerza `idx` a que la ventana completa de `traj_length` entre en el
+   episodio (`np.random.randint(0, episode_len - traj_length + 1)`) — no
+   hay ventanas parciales ni máscara. Costo: **alto** — requiere enmascarar
+   en `_sample`/`make_replay_loader`, en `DecisionTransformer.forward`
+   (pasar `attention_mask` a través de `Block`/`CausalSelfAttention`, que
+   hoy solo usa la máscara causal fija) y en el cálculo de la loss en
+   `update_actor` (excluir posiciones de padding). Riesgo: el más alto de
+   los 4 — toca la arquitectura de atención, no solo el pipeline de datos.
+
+**Lectura:** (1) y (2) son cambios de una línea, buenos candidatos a
+probar juntos primero (¿la normalización de embeddings o el recorte de
+gradiente explican algo de la brecha en hopper/walker2d?). (3) es
+razonable si el punto 9 sigue mostrando la brecha. (4) es la más costosa
+y la que más se aleja de "un cambio a la vez" — dejar para el final y
+solo si (1)-(3) no cierran la brecha, ya que además complica la
+comparación DT/HDT (hay que verificar que el masking funcione igual en
+la topología jerárquica de HDT). Ninguna de las 4 se implementó todavía
+— sigue pendiente de decisión con el usuario (punto 10), ahora con costo
+y riesgo estimado por cambio en vez de una lista sin priorizar.
+
+### 2.12 Resultados — re-entrenamiento con rtg corregido (jobs 28429-28442/28708, evaluados 2026-09-22)
+
+Los 18 jobs del punto 9 (§2.10) terminaron `COMPLETED` (walker2d-hdt-seed3
+necesitó dos intentos: 28443/28687 se cancelaron por el nodo pineado a
+`hydra`, completó como 28708 tras liberar el `nodelist`). Evaluados con
+`eval_seeds.py --device cpu` (job 28837, `eval_seeds_rtgfix.sbatch`), que
+agrega `eval_dt.py` sobre las 3 semillas y reporta media ± desviación
+**entre semillas** del score D4RL normalizado (10 episodios por semilla,
+snapshot 100000):
+
+| tarea | agente | s1 | s2 | s3 | media ± std (semillas) | paper (Chen et al. 2021) |
+|---|---|---|---|---|---|---|
+| halfcheetah | dt | 93.00 | 92.45 | 92.89 | **92.78 ± 0.24** | 86.8 ± 1.3 |
+| halfcheetah | hdt | 91.42 | 91.85 | 91.73 | **91.67 ± 0.18** | 86.8 ± 1.3 |
+| hopper | dt | 111.68 | 111.36 | 104.76 | **109.27 ± 3.19** | 107.6 ± 1.8 |
+| hopper | hdt | 104.24 | 108.85 | 103.45 | **105.51 ± 2.38** | 107.6 ± 1.8 |
+| walker2d | dt | 107.75 | 108.06 | 107.65 | **107.82 ± 0.18** | 108.1 ± 0.2 |
+| walker2d | hdt | 107.73 | 107.70 | 107.63 | **107.69 ± 0.04** | 108.1 ± 0.2 |
+
+**Lectura:** el fix del rtg (§2.10) cierra por completo la brecha de
+hopper/walker2d que motivó la revisión contra el código oficial — las 6
+combinaciones quedan dentro o por encima del rango del paper (hopper y
+walker2d a menos de 3 puntos, halfcheetah ~5-6 puntos por encima). DT y HDT
+quedan muy cerca entre sí en las 3 tareas (diferencia ≤3.8 puntos), sin que
+ninguno domine sistemáticamente al otro — no hay evidencia todavía de que
+la jerarquía de HDT cueste o ayude en control propioceptivo puro. Ya no
+hace falta seguir con el punto 10 (recorte de gradiente, LayerNorm de
+embeddings, muestreo proporcional, ventanas con máscara) para cerrar la
+brecha con el paper; queda como mejora opcional, no como corrección
+necesaria.
+
+Videos del primer episodio de la semilla ganadora por (tarea, agente), con
+`best_seed_videos.py --device cpu` (job 28838, `best_seed_videos_rtgfix.sbatch`):
+halfcheetah dt→seed1 (92.78), halfcheetah hdt→seed3 (92.23), hopper dt→seed1
+(111.59), hopper hdt→seed2 (108.53), walker2d dt→seed2 (108.23), walker2d
+hdt→seed1 (107.75) — en `eval_results/videos_best_seed_rtgfix/<tarea>_<agente>_seed<n>.mp4`.
+Log completo en `eval_results/eval_seeds_rtgfix.log`/`best_seed_videos_rtgfix.log`.
+Sin errores en ninguno de los 4 jobs de evaluación (28837-28840, incluye
+también CoinRun — resultados en §2.10).
 
 ## 3. Etapa 2 — Régimen visual (abierto, pendiente de decisión)
 
@@ -1681,7 +1827,11 @@ convertidos viven en `data/<dataset>/<domain>/episode_*.npz`
    `upstream/hier-procgen`), jobs 27107 (DT)/27108 (HDT) encolados sobre
    CoinRun (único juego, decisión confirmada con el usuario) —
    evaluación closed-loop hecha (§2.10), pero sobre entrenamientos con el
-   return-to-go defectuoso: pendiente decidir si se re-entrenan.
+   return-to-go defectuoso. Re-entrenado con el rtg corregido (§2.10):
+   jobs 28685 (DT)/28686 (HDT), evaluados con `eval_coinrun.py` (jobs
+   28839/28840, con video) — score normalizado DT train/val/test
+   0.78/0.28/0.40, HDT 0.68/0.66/0.62; HDT generaliza mejor a val/test,
+   DT memoriza mejor train (§2.10).
 7. [x] Diseñar la adaptación de AttAttr/SARFA a acción continua antes de
    empezar la Etapa 3. Diseño completo en §4.1 (2026-09-09): AttAttr con
    objetivo `a_pred[j]` por dimensión de acción; SARFA reformulado por
@@ -1703,11 +1853,40 @@ convertidos viven en `data/<dataset>/<domain>/episode_*.npz`
    return-to-go de entrenamiento se calculaba sobre la ventana de 20 pasos y
    descontado (0.99), en vez de sobre el episodio completo y sin descontar;
    corregido en `replay_buffer.py`/`agent/dt.py`.
-9. [ ] Re-entrenamiento con el rtg corregido: 18 jobs (28426-28443), Adam
-   simple + norm obs, {DT, HDT} × 3 tareas × semillas {1, 2, 3}. Luego
-   evaluar con `eval_dt.py`, comparar contra §2.9 y el paper, y reportar
-   media ± desviación entre semillas (§2.4).
+9. [x] Re-entrenamiento con el rtg corregido: 18 jobs (28426-28443/28708),
+   Adam simple + norm obs, {DT, HDT} × 3 tareas × semillas {1, 2, 3}.
+   Evaluado con `eval_seeds.py`/`best_seed_videos.py` (jobs 28837/28838,
+   §2.12): las 6 combinaciones quedan dentro o por encima del rango del
+   paper (halfcheetah dt 92.78/hdt 91.67, hopper dt 109.27/hdt 105.51,
+   walker2d dt 107.82/hdt 107.69, media ± std entre semillas), cerrando
+   la brecha que motivó la revisión del punto 8. DT y HDT quedan muy
+   cerca entre sí en las 3 tareas, sin dominancia clara de ninguno.
+   Videos de la semilla ganadora por (tarea, agente) en
+   `eval_results/videos_best_seed_rtgfix/`. Los 18 jobs (más 28457/28458
+   de CoinRun, punto 6) estaban todos pineados a `--nodelist=hydra`, que
+   estaba ocupado por jobs de otros usuarios mientras
+   `yodaxico`/`ventress`/`scylla` tenían GPUs libres — liberados con
+   `scontrol update JobId=<id> ReqNodeList=` (sin reencolar), ya
+   corriendo varios en paralelo. El cambio de GPU no afecta los
+   resultados (mismo código/semilla, FP32 sin AMP en todo el pipeline;
+   la única diferencia real es velocidad, más lenta en los 1080 Ti de
+   `yodaxico` que en los Titan RTX de `hydra`) — confirmado ahora que el
+   sbatch ya no fija `--nodelist=hydra` como preferencia de infraestructura
+   del cluster, no solo para esta corrida.
 10. [ ] Decidir si se aplican las otras diferencias con el oficial
    (recorte de gradiente 0.25, ventanas cortas con máscara, muestreo
-   proporcional al largo, arquitectura) si hopper/walker2d siguen lejos del
-   paper, y si se re-entrena CoinRun con el rtg corregido.
+   proporcional al largo) si hopper/walker2d siguen lejos del paper —
+   detalle de costo/riesgo de cada una en §2.11.
+11. [ ] Repetir el análisis de interpretabilidad (§4, AttAttr/SARFA) sobre
+   los snapshots con rtg corregido una vez estén listos (puntos 9 y 6). El
+   análisis de §4.2/§4.3 (incluido el hallazgo de que no cross-validan y
+   que "return" parecía poco importante para SARFA) se corrió sobre
+   snapshots con el rtg defectuoso — un rtg casi constante (máx. 0.099,
+   §2.10) le daba al modelo poca o ninguna razón para aprender a usar el
+   token de retorno causalmente, lo que puede explicar por sí solo el
+   bajo efecto causal de "return" que medía SARFA. Con el rtg corregido
+   (que ahora sí distingue episodios buenos de malos) es esperable que el
+   efecto causal de "return" suba; queda abierto si eso alcanza para que
+   SARFA y AttAttr converjan. `attattr.py`/`sarfa.py` no necesitan cambios
+   de código (`--snapshot` ya es un path genérico) — solo correrlos de
+   nuevo sobre los snapshots rtgfix.

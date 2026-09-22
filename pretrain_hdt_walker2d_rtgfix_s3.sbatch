@@ -3,7 +3,6 @@
 #SBATCH --partition=ialab-low
 #SBATCH --qos=regular
 #SBATCH --account=default-account
-#SBATCH --nodelist=hydra
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
