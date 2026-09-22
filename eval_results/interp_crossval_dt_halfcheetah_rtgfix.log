@@ -1,0 +1,22 @@
+number of parameters: %e 727302
+dt halfcheetah target_dim=0 (3 episodios x 3 posiciones = 9 ventanas)
+
+episode_0_1000.npz start= 245: rho=+0.227  dominante AttAttr=return SARFA=state 
+episode_0_1000.npz start= 490: rho=-0.142  dominante AttAttr=return SARFA=state 
+episode_0_1000.npz start= 736: rho=+0.014  dominante AttAttr=return SARFA=action
+episode_1000_1000.npz start= 245: rho=-0.166  dominante AttAttr=return SARFA=state 
+episode_1000_1000.npz start= 490: rho=-0.601  dominante AttAttr=return SARFA=state 
+episode_1000_1000.npz start= 736: rho=-0.078  dominante AttAttr=return SARFA=state 
+episode_1001_1000.npz start= 245: rho=+0.016  dominante AttAttr=return SARFA=action
+episode_1001_1000.npz start= 490: rho=+0.006  dominante AttAttr=return SARFA=state 
+episode_1001_1000.npz start= 736: rho=-0.155  dominante AttAttr=return SARFA=state 
+
+[agregado sobre 9 ventanas]
+  Spearman agregado (capas+heads) vs SARFA: media -0.098 +/- 0.212, rango [-0.601, +0.227]
+  Spearman capa 0 (sin agregar) vs SARFA: media -0.160 +/- 0.242
+  Spearman capa 1 (sin agregar) vs SARFA: media -0.158 +/- 0.162
+  Spearman capa 2 (sin agregar) vs SARFA: media -0.146 +/- 0.221
+  acuerdo en modalidad dominante: 0/9 (0%)
+  SARFA dominante por modalidad:   return=0, state=7, action=2
+  AttAttr dominante por modalidad: return=9, state=0, action=0
+  guardado: eval_results/interp_crossval_dt_halfcheetah_rtgfix.npz

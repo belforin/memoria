@@ -1084,6 +1084,15 @@ nada de esto se puede separar de varianza pura de entrenamiento (init de
 pesos, orden de datos) sin repetir con más semillas, como sí se hizo en
 D4RL (§2.12).
 
+**En curso (2026-09-22):** para poder responder esa pregunta, se
+encolaron 2 semillas más por agente, mismo protocolo que 28685/28686
+(`pretrain_{dt,hdt}_coinrun_rtgfix_s{2,3}.sbatch`, snapshots en
+`~/snapshot/coinrun_{dt,hdt}_rtgfix/coinrun/{2,3}/`): jobs 28845 (DT s2),
+28846 (DT s3), 28847 (HDT s2), 28848 (HDT s3). Pendiente evaluar con
+`eval_coinrun.py` cuando terminen y reportar media ± desviación entre las
+3 semillas, igual que en D4RL (§2.12), para confirmar si HDT generaliza
+mejor de verdad o si fue varianza de esta única corrida.
+
 **Nota sobre un error de esta sección (corregido 2026-09-22):** la primera
 versión reportaba la tanda anterior en tasa de éxito (%) y esta tanda
 directamente en "score normalizado" (rango [-1,1], p.ej. "0.28"), sin
@@ -1798,6 +1807,59 @@ Sigue pendiente de decisión con el usuario cómo proceder (ver las 3
 opciones más arriba) antes de usar cualquiera de los dos métodos para
 una conclusión DT vs. HDT — pero ahora con más elementos para decidir.
 
+### 4.4 Validación cruzada repetida sobre los snapshots con rtg corregido (opción 3 de §4.3, 2026-09-22)
+
+Punto 11 del resumen de próximos pasos: repetir §4.3 sobre checkpoints
+entrenados con el rtg corregido (§2.10/§2.12), para ver si un rtg que sí
+distingue episodios buenos de malos (antes casi constante, máx. 0.099)
+cambia cuánto pesa "return" para cualquiera de los dos métodos. De paso
+cubre la opción 3 que había quedado pendiente en §4.3 (repetir en DT, no
+solo HDT, y sobre checkpoints de mejor calidad).
+
+Como la validación cruzada de 9 ventanas se había hecho a mano la primera
+vez, se escribió `interp_crossval.py` (nuevo, agrega `attattr.py`/
+`sarfa.py` sobre N episodios × M posiciones de inicio y reporta Spearman
+agregado, Spearman por capa individual y acuerdo de modalidad dominante)
+para poder repetirla de forma reproducible. Corrida sobre
+`halfcheetah_medium_expert`, `target_dim=0`, mismas 3 episodios × 3
+posiciones que §4.3, sobre los snapshots rtgfix de mejor semilla (§2.12):
+HDT semilla 3 (score 92.23) y DT semilla 1 (score 92.78).
+
+| | HDT rtgfix | DT rtgfix | (referencia: HDT rtg roto, §4.3) |
+|---|---|---|---|
+| Spearman agregado (capas+heads) vs SARFA | −0.067 ± 0.192 | −0.098 ± 0.212 | −0.075 ± 0.443 |
+| Acuerdo modalidad dominante | **0/9 (0%)** | **0/9 (0%)** | 3/9 (33%) |
+| AttAttr dominante por modalidad | return=9, state=0, action=0 | return=9, state=0, action=0 | disperso (return/state/action) |
+| SARFA dominante por modalidad | return=0, state=8, action=1 | return=0, state=7, action=2 | state=7, otros=2 |
+
+**Lectura:** la correlación de Spearman sigue sin mostrar relación
+confiable (rango similar, cruza cero) — el rtg corregido **no resuelve**
+la divergencia entre los dos métodos, y el patrón es el mismo en DT que
+en HDT (descarta que fuera un artefacto de una sola topología o de un
+checkpoint particular, opción 3 de §4.3 respondida). Lo que sí cambió,
+y de forma consistente en los dos agentes: **AttAttr ahora marca "return"
+como la modalidad dominante en el 100% de las ventanas** (antes estaba
+disperso entre las 3 modalidades), mientras que **SARFA sigue marcando
+"state" como dominante en la gran mayoría** (8/9 y 7/9) — el acuerdo entre
+métodos, si algo, empeoró (0/9 vs. 3/9 antes).
+
+Esto es consistente con — y refuerza — la hipótesis de redundancia de
+§4.3 (`group_ablation`): con un rtg que ahora sí varía de forma informativa
+dentro de la ventana, el modelo aparentemente aprende a **atender** mucho
+más a los tokens de retorno (atención alta → AttAttr alto y ahora siempre
+dominante), pero sigue sin depender causalmente de ningún token de retorno
+individual porque son redundantes entre sí (ablacionar uno solo no cambia
+mucho la salida → SARFA bajo). El rtg roto simplemente no le daba al
+modelo una razón para atender a esos tokens en absoluto; el rtg corregido
+sí, pero el uso que hace de esa atención parece ser más estructural que
+causal — la pregunta abierta de §4.3 (por qué AttAttr sobreestima
+"return") sigue abierta, ahora con más evidencia de que no depende del rtg
+de entrenamiento.
+
+Sin cambios de código en `attattr.py`/`sarfa.py` — solo el script nuevo
+`interp_crossval.py` y apuntar a los snapshots rtgfix. Resultados crudos
+en `eval_results/interp_crossval_{hdt,dt}_halfcheetah_rtgfix.{log,npz}`.
+
 ## 5. Selección de variante HDT de referencia
 
 Si se terminan implementando varias configuraciones de HDT (paridad vía
@@ -1914,16 +1976,23 @@ convertidos viven en `data/<dataset>/<domain>/episode_*.npz`
    (recorte de gradiente 0.25, ventanas cortas con máscara, muestreo
    proporcional al largo) si hopper/walker2d siguen lejos del paper —
    detalle de costo/riesgo de cada una en §2.11.
-11. [ ] Repetir el análisis de interpretabilidad (§4, AttAttr/SARFA) sobre
-   los snapshots con rtg corregido una vez estén listos (puntos 9 y 6). El
-   análisis de §4.2/§4.3 (incluido el hallazgo de que no cross-validan y
-   que "return" parecía poco importante para SARFA) se corrió sobre
-   snapshots con el rtg defectuoso — un rtg casi constante (máx. 0.099,
-   §2.10) le daba al modelo poca o ninguna razón para aprender a usar el
-   token de retorno causalmente, lo que puede explicar por sí solo el
-   bajo efecto causal de "return" que medía SARFA. Con el rtg corregido
-   (que ahora sí distingue episodios buenos de malos) es esperable que el
-   efecto causal de "return" suba; queda abierto si eso alcanza para que
-   SARFA y AttAttr converjan. `attattr.py`/`sarfa.py` no necesitan cambios
-   de código (`--snapshot` ya es un path genérico) — solo correrlos de
-   nuevo sobre los snapshots rtgfix.
+11. [x] Repetir el análisis de interpretabilidad (§4, AttAttr/SARFA) sobre
+   los snapshots con rtg corregido (puntos 9 y 6). Hecho en §4.4
+   (2026-09-22), sobre halfcheetah DT y HDT (mejor semilla, §2.12), con
+   `interp_crossval.py` (nuevo, agrega las 9 ventanas de forma
+   reproducible). **El rtg corregido no resuelve la divergencia** (Spearman
+   sigue ≈0, rango similar) y el patrón es igual en DT y HDT — pero sí
+   cambió algo: AttAttr ahora marca "return" como modalidad dominante en
+   9/9 ventanas en ambos agentes (antes disperso), mientras SARFA sigue
+   marcando "state" en la mayoría — el acuerdo entre métodos bajó de 3/9 a
+   0/9. Refuerza la hipótesis de redundancia de §4.3: el rtg corregido le
+   da al modelo una razón real para *atender* a los tokens de retorno,
+   pero no cambia que dependa causalmente de ellos de forma individual.
+12. [ ] Confirmar si la diferencia de generalización DT vs. HDT en CoinRun
+   rtgfix (§2.10 — DT sobreajusta más a train, HDT generaliza mejor a
+   val/test) es señal real o solo varianza de la única semilla entrenada
+   hasta ahora. Encolados 2026-09-22: jobs 28845-28848, 2 semillas más por
+   agente (`pretrain_{dt,hdt}_coinrun_rtgfix_s{2,3}.sbatch`). Pendiente
+   evaluar con `eval_coinrun.py` cuando terminen y reportar media ±
+   desviación entre las 3 semillas por split, igual que se hizo en D4RL
+   (§2.12).
