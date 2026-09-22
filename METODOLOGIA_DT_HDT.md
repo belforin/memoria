@@ -1084,14 +1084,50 @@ nada de esto se puede separar de varianza pura de entrenamiento (init de
 pesos, orden de datos) sin repetir con más semillas, como sí se hizo en
 D4RL (§2.12).
 
-**En curso (2026-09-22):** para poder responder esa pregunta, se
-encolaron 2 semillas más por agente, mismo protocolo que 28685/28686
-(`pretrain_{dt,hdt}_coinrun_rtgfix_s{2,3}.sbatch`, snapshots en
-`~/snapshot/coinrun_{dt,hdt}_rtgfix/coinrun/{2,3}/`): jobs 28845 (DT s2),
-28846 (DT s3), 28847 (HDT s2), 28848 (HDT s3). Pendiente evaluar con
-`eval_coinrun.py` cuando terminen y reportar media ± desviación entre las
-3 semillas, igual que en D4RL (§2.12), para confirmar si HDT generaliza
-mejor de verdad o si fue varianza de esta única corrida.
+**Resultados con las 3 semillas (jobs 28845-28848, evaluados 2026-09-22):**
+para responder la pregunta de arriba se encolaron 2 semillas más por agente,
+mismo protocolo que 28685/28686 (`pretrain_{dt,hdt}_coinrun_rtgfix_s{2,3}.sbatch`,
+snapshots en `~/snapshot/coinrun_{dt,hdt}_rtgfix/coinrun/{2,3}/`), y se
+evaluaron las 3 juntas con `eval_coinrun_seeds.py` (nuevo, agrega
+`eval_coinrun.py` sobre las 3 semillas igual que `eval_seeds.py` hace para
+D4RL — job 28881, sin video, 100 episodios por split y semilla):
+
+| agente | split | s1 | s2 | s3 | media ± std (semillas) |
+|---|---|---|---|---|---|
+| dt | train | 0.780 | 0.800 | 0.740 | **0.773 ± 0.025** |
+| dt | val | 0.400 | 0.520 | 0.460 | **0.460 ± 0.049** |
+| dt | test | 0.660 | 0.460 | 0.500 | **0.540 ± 0.086** |
+| hdt | train | 0.840 | 0.720 | 0.880 | **0.813 ± 0.068** |
+| hdt | val | 0.600 | 0.460 | 0.440 | **0.500 ± 0.071** |
+| hdt | test | 0.760 | 0.460 | 0.640 | **0.620 ± 0.123** |
+
+**El hallazgo de la corrida de una sola semilla (arriba: "DT sobreajusta,
+HDT generaliza mejor") no se sostiene con 3 semillas.** Con más datos, HDT
+queda por encima de DT en las 3 splits (train 0.813 vs. 0.773, val 0.500
+vs. 0.460, test 0.620 vs. 0.540), no solo en generalización — pero las
+diferencias (0.04-0.10) son chicas frente a la desviación entre semillas
+(0.025-0.123), así que tampoco alcanza para afirmar con confianza que HDT
+sea mejor en general; lo único que cambió de verdad es que **la lectura
+de la §2.10 original (basada en una sola semilla) era ruido, no señal**.
+
+**Hallazgo metodológico adicional (afecta a todas las evaluaciones de
+CoinRun, no solo esta comparación):** al notar que el valor de "semilla 1"
+en esta corrida (dt val 0.400, test 0.660) no coincide con el reportado en
+el job original 28839 (dt val 0.280, test 0.400) para el mismo snapshot,
+se encontró la causa: `eval_coinrun.py` nunca pasa `rand_seed` a
+`procgen.ProcgenEnv(...)`. Sin ese argumento, `procgen/env.py` genera un
+seed aleatorio con `random.SystemRandom()` (entropía del SO) en cada
+instancia — el `--seed`/`np.random.seed()` del script controla el offset
+de episodio pero **no** qué niveles concretos sortea Procgen dentro del
+rango `[start_level, start_level+num_levels)`. Es decir: **correr el mismo
+snapshot dos veces con el mismo `--seed` da niveles distintos y por lo
+tanto números distintos**, una fuente de ruido no documentada hasta ahora,
+separada de la varianza entre semillas de entrenamiento. No se corrigió
+todavía (requeriría re-evaluar todo lo de CoinRun para que sea comparable) —
+queda como mejora pendiente de baja prioridad (pasar `rand_seed=args.seed`
+a `ProcgenEnv` en `eval_coinrun.py`/`eval_coinrun_seeds.py` haría los
+resultados reproducibles de verdad, a costa de invalidar la comparación
+con todo lo ya reportado en este documento).
 
 **Nota sobre un error de esta sección (corregido 2026-09-22):** la primera
 versión reportaba la tanda anterior en tasa de éxito (%) y esta tanda
@@ -1988,11 +2024,15 @@ convertidos viven en `data/<dataset>/<domain>/episode_*.npz`
    0/9. Refuerza la hipótesis de redundancia de §4.3: el rtg corregido le
    da al modelo una razón real para *atender* a los tokens de retorno,
    pero no cambia que dependa causalmente de ellos de forma individual.
-12. [ ] Confirmar si la diferencia de generalización DT vs. HDT en CoinRun
+12. [x] Confirmar si la diferencia de generalización DT vs. HDT en CoinRun
    rtgfix (§2.10 — DT sobreajusta más a train, HDT generaliza mejor a
    val/test) es señal real o solo varianza de la única semilla entrenada
-   hasta ahora. Encolados 2026-09-22: jobs 28845-28848, 2 semillas más por
-   agente (`pretrain_{dt,hdt}_coinrun_rtgfix_s{2,3}.sbatch`). Pendiente
-   evaluar con `eval_coinrun.py` cuando terminen y reportar media ±
-   desviación entre las 3 semillas por split, igual que se hizo en D4RL
-   (§2.12).
+   hasta ahora. Jobs 28845-28848 (2 semillas más por agente) + evaluación
+   con `eval_coinrun_seeds.py` (nuevo, job 28881) en §2.10 (2026-09-22):
+   **el hallazgo de una sola semilla era ruido, no señal** — con 3 semillas
+   HDT queda por encima de DT en las 3 splits, pero por márgenes chicos
+   frente a la desviación entre semillas. De paso se encontró que
+   `eval_coinrun.py` nunca fija `rand_seed` en `ProcgenEnv`, así que cada
+   corrida sortea niveles distintos aunque se use el mismo `--seed` —
+   fuente de ruido adicional no documentada hasta ahora, pendiente de
+   arreglo de baja prioridad (ver detalle en §2.10).
