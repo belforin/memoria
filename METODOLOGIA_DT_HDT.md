@@ -1021,41 +1021,77 @@ comparar contra §3 (resultados con el rtg defectuoso, más abajo).
 
 #### Resultados de CoinRun previos a la corrección (jobs 28404/28405)
 
-Con el rtg defectuoso, snapshot 100000, 100 episodios por split, una semilla
-(tasa de éxito; el reward es binario 0/10): DT train 83% / val 76% / test
-74%; HDT train 91% / val 76% / test 83%. Videos en
-`eval_results/videos_coinrun_{dt,hdt}_100000/` (3 episodios por split, todos
-ganados). `eval_coinrun.py` ahora graba video con `--video-dir`. Curvas de
-`action_loss` al paso 100000: DT 1.498, HDT 1.279 (`BR` de los logs es
-`batch_reward`, el reward medio del batch del dataset, no una métrica del
-modelo).
+Con el rtg defectuoso, snapshot 100000, 100 episodios por split, una semilla.
+`eval_coinrun.py` reporta "score normalizado" = `(retorno-5)/5` (tabla
+`PROCGEN["coinrun"]["easy"] = (5, 10)`, rango **[-1, 1]**, no [0, 1] — como
+el reward es binario 0/10, un episodio ganado da score +1 y uno perdido
+−1). Como el reward es binario, la tasa de éxito (% de episodios ganados)
+es simplemente `retorno_medio / 10` y es más legible que el score
+normalizado para este caso puntual; se reportan ambas para no repetir el
+error de comparar las dos tandas en escalas distintas (ver más abajo):
+
+| split | DT tasa éxito (score norm.) | HDT tasa éxito (score norm.) |
+|---|---|---|
+| train | 83% (0.660 ± 0.751) | 91% (0.820 ± 0.572) |
+| val   | 76% (0.520 ± 0.854) | 76% (0.520 ± 0.854) |
+| test  | 74% (0.480 ± 0.877) | 83% (0.660 ± 0.751) |
+
+Videos en `eval_results/videos_coinrun_{dt,hdt}_100000/` (3 episodios por
+split, todos ganados). `eval_coinrun.py` ahora graba video con
+`--video-dir`. Curvas de `action_loss` al paso 100000: DT 1.498, HDT 1.279
+(`BR` de los logs es `batch_reward`, el reward medio del batch del dataset,
+no una métrica del modelo).
 
 #### Resultados de CoinRun tras la corrección (jobs 28685/28686, evaluados 2026-09-22)
 
 Reentrenamiento completado (28685 DT, 28686 HDT, ambos `COMPLETED`, ~2h cada
 uno) y evaluado con `eval_dt_coinrun_rtgfix.sbatch`/`eval_hdt_coinrun_rtgfix.sbatch`
 (jobs 28839/28840, snapshot 100000, 100 episodios por split, semilla 1,
-`--video-dir`). Score normalizado por split (retorno normalizado a [0,1]
-vía la tabla `PROCGEN["coinrun"]["easy"] = (5, 10)`, no la tasa de éxito
-binaria de la tanda anterior, para que sea comparable con el score D4RL de
-§2.12):
+`--video-dir`). Mismas dos métricas que en la tanda anterior (tasa de
+éxito y score normalizado entre −1 y 1), para que la comparación sea
+directa:
+
+| split | DT tasa éxito (score norm.) | HDT tasa éxito (score norm.) |
+|---|---|---|
+| train | 89% (0.780 ± 0.626) | 84% (0.680 ± 0.733) |
+| val   | 64% (0.280 ± 0.960) | 83% (0.660 ± 0.751) |
+| test  | 70% (0.400 ± 0.917) | 81% (0.620 ± 0.785) |
+
+**Comparación antes → después (tasa de éxito, apples-to-apples):**
 
 | split | DT | HDT |
 |---|---|---|
-| train | 0.780 ± 0.626 | 0.680 ± 0.733 |
-| val   | 0.280 ± 0.960 | 0.660 ± 0.751 |
-| test  | 0.400 ± 0.917 | 0.620 ± 0.785 |
+| train | 83% → 89% (+6pp) | 91% → 84% (−7pp) |
+| val   | 76% → 64% (**−12pp**) | 76% → 83% (+7pp) |
+| test  | 74% → 70% (−4pp) | 83% → 81% (−2pp) |
 
-**Lectura:** DT memoriza mejor los niveles de entrenamiento (0.78 vs. 0.68)
-pero se degrada fuerte fuera de distribución (val 0.28, test 0.40, caída de
-~0.4-0.5 puntos); HDT generaliza mejor a val/test (0.66/0.62, caída de solo
-~0.02-0.06 puntos respecto a train) aunque parte más abajo en train. Es la
-primera comparación DT vs. HDT en el régimen visual con el rtg corregido —
-consistente con la hipótesis de que la jerarquía de HDT ayuda a generalizar
-más que a memorizar. Un solo seed por agente (§0.1, decisión confirmada con
-el usuario de single-seed para CoinRun), así que la desviación reportada es
-entre episodios, no entre semillas como en §2.12 — no se puede descartar
-que parte de la diferencia sea varianza de semilla.
+**Lectura (revisada — la primera versión de esta sección comparaba mal las
+dos tandas, ver nota al final):** con el rtg corregido, HDT generaliza
+*mejor* que antes (val +7pp) y solo pierde un poco en train; DT es el que
+empeora en val/test (−12pp, −4pp) aunque mejora en train (+6pp) — es decir,
+parece sobreajustar más a los 200 niveles de entrenamiento en vez de
+aprender peor en general. Es consistente con la hipótesis de que la
+jerarquía de HDT ayuda a generalizar: con el rtg roto (casi constante, máx.
+0.099, §2.10) ambos agentes eran efectivamente behavior cloning puro (sin
+señal de retorno real de la que abusar), lo que puede explicar por qué
+antes las tres tandas eran más parejas entre sí; con el rtg corregido, DT
+sí aprende a condicionarse por retorno pero eso le da más superficie para
+memorizar patrones específicos de los niveles vistos, mientras que HDT
+aprovecha la señal corregida sin pagar ese costo de generalización.
+**Alternativa que no se puede descartar:** CoinRun corre con **una sola
+semilla por agente** (§0.1, decisión confirmada con el usuario), así que
+nada de esto se puede separar de varianza pura de entrenamiento (init de
+pesos, orden de datos) sin repetir con más semillas, como sí se hizo en
+D4RL (§2.12).
+
+**Nota sobre un error de esta sección (corregido 2026-09-22):** la primera
+versión reportaba la tanda anterior en tasa de éxito (%) y esta tanda
+directamente en "score normalizado" (rango [-1,1], p.ej. "0.28"), sin
+avisar que son la misma métrica en dos escalas distintas — eso hacía ver
+una caída mucho más grande de la real (p.ej. "76% → 0.28" parece un
+desplome, pero 0.28 de score equivale a 64% de tasa de éxito, una caída
+real pero bastante menor). Corregido reportando ambas métricas en las dos
+tandas.
 
 Videos (3 episodios por split, incluye derrotas: `ep00_ret0.mp4` en DT
 test) en `eval_results/videos_coinrun_{dt,hdt}_rtgfix_100000/{train,val,test}/`.
@@ -1829,9 +1865,10 @@ convertidos viven en `data/<dataset>/<domain>/episode_*.npz`
    evaluación closed-loop hecha (§2.10), pero sobre entrenamientos con el
    return-to-go defectuoso. Re-entrenado con el rtg corregido (§2.10):
    jobs 28685 (DT)/28686 (HDT), evaluados con `eval_coinrun.py` (jobs
-   28839/28840, con video) — score normalizado DT train/val/test
-   0.78/0.28/0.40, HDT 0.68/0.66/0.62; HDT generaliza mejor a val/test,
-   DT memoriza mejor train (§2.10).
+   28839/28840, con video) — tasa de éxito DT train/val/test 89%/64%/70%,
+   HDT 84%/83%/81% (antes de corregir el rtg: DT 83%/76%/74%, HDT
+   91%/76%/83%); HDT generaliza mejor que antes (val +7pp), DT memoriza
+   mejor train pero empeora en val/test (§2.10).
 7. [x] Diseñar la adaptación de AttAttr/SARFA a acción continua antes de
    empezar la Etapa 3. Diseño completo en §4.1 (2026-09-09): AttAttr con
    objetivo `a_pred[j]` por dimensión de acción; SARFA reformulado por
