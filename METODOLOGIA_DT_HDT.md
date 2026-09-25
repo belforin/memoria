@@ -1246,7 +1246,11 @@ Log completo en `eval_results/eval_seeds_rtgfix.log`/`best_seed_videos_rtgfix.lo
 Sin errores en ninguno de los 4 jobs de evaluación (28837-28840, incluye
 también CoinRun — resultados en §2.10).
 
-## 3. Etapa 2 — Régimen visual (abierto, pendiente de decisión)
+## 3. Etapa 2 — Régimen visual (decidido: entra en el alcance, ver §3.1)
+
+*(El texto que sigue es el planteo original, antes de la decisión. La
+decisión fue incluirla, sobre CoinRun, con la infraestructura de Benjamín:
+implementación y resultados en §3.1 y §2.10.)*
 
 Su Etapa II traslada el problema a CoinRun (Procgen) con un codificador
 visual IMPALA congelado. Para DT/HDT no existe hoy un dataset offline
@@ -1898,6 +1902,16 @@ en `eval_results/interp_crossval_{hdt,dt}_halfcheetah_rtgfix.{log,npz}`.
 
 ## 5. Selección de variante HDT de referencia
 
+**Cerrado (2026-09-25, decisión del usuario): no aplica.** Solo existe una
+variante de HDT y no se va a implementar otra. En particular, no se agrega
+fusión por atención cruzada (`CoAttentionBlock` del `agent/mdp.py` de
+Benjamín): nuestros dos modelos son Decision Transformers (HDT = flujos
+separados por modalidad + auto-atención conjunta), y la comparación es
+DT vs. HDT dentro de esa familia, no una réplica de la arquitectura de
+MaskDP jerárquico. Que HDT no tenga atención cruzada es parte del diseño,
+no una limitación a corregir. El texto original de esta sección queda
+abajo como referencia.
+
 Si se terminan implementando varias configuraciones de HDT (paridad vía
 `self_attn` únicamente vs. con fusión por atención cruzada, distintos
 repartos de dimensión), usar el mismo procedimiento de **agregación por
@@ -2008,10 +2022,14 @@ convertidos viven en `data/<dataset>/<domain>/episode_*.npz`
    `yodaxico` que en los Titan RTX de `hydra`) — confirmado ahora que el
    sbatch ya no fija `--nodelist=hydra` como preferencia de infraestructura
    del cluster, no solo para esta corrida.
-10. [ ] Decidir si se aplican las otras diferencias con el oficial
+10. [x] ~~Decidir si se aplican las otras diferencias con el oficial
    (recorte de gradiente 0.25, ventanas cortas con máscara, muestreo
-   proporcional al largo) si hopper/walker2d siguen lejos del paper —
-   detalle de costo/riesgo de cada una en §2.11.
+   proporcional al largo) si hopper/walker2d siguen lejos del paper~~ —
+   **cerrado sin aplicar (2026-09-25)**: tras el fix del rtg (punto 9,
+   §2.12) hopper y walker2d ya quedan dentro del rango del paper, así que
+   la condición que motivaba este punto dejó de cumplirse. Las diferencias
+   quedan documentadas en §2.11 como mejora opcional, no como corrección
+   pendiente.
 11. [x] Repetir el análisis de interpretabilidad (§4, AttAttr/SARFA) sobre
    los snapshots con rtg corregido (puntos 9 y 6). Hecho en §4.4
    (2026-09-22), sobre halfcheetah DT y HDT (mejor semilla, §2.12), con

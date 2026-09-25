@@ -40,6 +40,17 @@ OBS_ACTION_DIMS = {
     "hopper": (11, 3),
     "walker2d": (17, 6),
 }
+# Etapa 2 (METODOLOGIA_DT_HDT.md seccion 3): obs de pixeles + accion
+# discreta. num_actions sale del cfg del snapshot, no de esta constante.
+COINRUN_TASK = "coinrun"
+COINRUN_OBS_SHAPE = (64, 64, 3)
+TASKS = list(OBS_ACTION_DIMS) + [COINRUN_TASK]
+
+
+def default_data_dir(task):
+    if task == COINRUN_TASK:
+        return Path("data") / COINRUN_TASK
+    return Path("data") / f"{task}_medium_expert" / task
 
 
 def _patched_attn_forward(self, x, mask, alpha=1.0, capture=None):
@@ -70,13 +81,19 @@ def _patched_attn_forward(self, x, mask, alpha=1.0, capture=None):
 
 
 def load_agent(snapshot, agent_kind, task, device):
-    obs_dim, action_dim = OBS_ACTION_DIMS[task]
     payload = torch.load(snapshot, map_location=device)
+    if task == COINRUN_TASK:
+        # mismo armado que eval_coinrun_seeds.py::load_agent
+        obs_shape = COINRUN_OBS_SHAPE
+        action_shape = (payload["cfg"].num_actions,)
+    else:
+        obs_dim, action_dim = OBS_ACTION_DIMS[task]
+        obs_shape, action_shape = (obs_dim,), (action_dim,)
     agent_cls = DTAgent if agent_kind == "dt" else HDTAgent
     agent = agent_cls(
         name=f"{agent_kind}_attattr",
-        obs_shape=(obs_dim,),
-        action_shape=(action_dim,),
+        obs_shape=obs_shape,
+        action_shape=action_shape,
         device=device,
         lr=1e-4,
         batch_size=1,
@@ -95,39 +112,64 @@ def load_window(task, episode_path, start_idx, traj_length):
     """Misma convencion de alineacion que OfflineReplayBuffer._sample
     (replay_buffer.py): obs[i] = observation[start_idx-1+i] (estado en el
     paso i de la ventana), action[i] = action[start_idx+i] (accion
-    tomada DESDE obs[i]). reward/discount van desfasados igual que en
-    _sample (alineados con la accion, no con el estado)."""
+    tomada DESDE obs[i]). rtg[i] = return-to-go CRUDO (sin escalar) del
+    episodio completo, sin descontar, en start_idx+i -- identico a
+    `episode["rtg"]` del buffer con return_to_go=True, que es lo que ven
+    los snapshots rtgfix en entrenamiento (METODOLOGIA seccion 2.10). Antes
+    se recalculaba sobre la ventana y descontado, que es el rtg defectuoso
+    de antes del fix (seccion 4.5)."""
     episode = load_episode(episode_path, task, None)
     assert start_idx >= 1, "start_idx debe ser >= 1 (idx-1 se usa para el estado inicial)"
     assert start_idx - 1 + traj_length <= episode_len(episode), (
         f"ventana [{start_idx - 1}, {start_idx - 1 + traj_length}) se sale del episodio "
         f"(largo {episode_len(episode)})"
     )
+    rtg_full = np.cumsum(episode["reward"][::-1], axis=0)[::-1].astype(np.float32)
     obs = episode["observation"][start_idx - 1 : start_idx - 1 + traj_length]
     action = episode["action"][start_idx : start_idx + traj_length]
-    reward = episode["reward"][start_idx : start_idx + traj_length]
-    discount = episode["discount"][start_idx : start_idx + traj_length]
+    rtg = rtg_full[start_idx : start_idx + traj_length]
     timestep = np.arange(start_idx - 1, start_idx - 1 + traj_length)
-    return obs, action, reward, discount, timestep
+    return obs, action, rtg, timestep
 
 
-def att_attr(agent, obs, action, reward, discount, timestep, target_dim, m, device):
+def window_tensors(agent, obs, action, rtg, timestep, device):
+    """(1, T, ...) tensores listos para agent.model. Obs de pixeles van en
+    float32 (el encoder hace .float()/255 igual), para que SARFA pueda
+    meter frames difuminados no enteros; acciones discretas en int64. rtg
+    se escala por return_scale igual que en DTAgent.update_actor."""
+    obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float32, device=device).unsqueeze(0)
+    action_dtype = torch.long if agent.model.discrete_actions else torch.float32
+    action_t = torch.as_tensor(np.asarray(action), dtype=action_dtype, device=device).unsqueeze(0)
+    rtg_t = torch.as_tensor(np.asarray(rtg), dtype=torch.float32, device=device).unsqueeze(0)
+    rtg_t = rtg_t / agent.return_scale
+    timestep_t = torch.as_tensor(timestep, dtype=torch.long, device=device).unsqueeze(0)
+    return obs_t, action_t, rtg_t, timestep_t
+
+
+def resolve_target(agent, obs_t, action_t, rtg_t, timestep_t, target_dim):
+    """Indice de salida a atribuir en a_pred[-1]. Accion continua: la
+    dimension `target_dim` (seccion 4.1). Accion discreta (CoinRun): el
+    logit de la accion argmax (la que el agente elegiria), igual que
+    analysis/attn_attr.py de Benjamin (rama upstream/hier-procgen-attattr);
+    `target_dim` se ignora."""
+    if not agent.model.discrete_actions:
+        return target_dim
+    with torch.no_grad():
+        logits = agent.model(rtg_t, obs_t, action_t, timesteps=timestep_t)[0, -1]
+    return int(logits.argmax().item())
+
+
+def att_attr(agent, obs, action, rtg, timestep, target_dim, m, device):
     """Devuelve un array (n_layer, n_head, 3T, 3T): Attr_l por capa del
     stack `agent.model.blocks`, para el objetivo escalar
-    `a_pred[-1, target_dim]` (accion predicha en el ultimo timestep de la
-    ventana). Cada capa se atribuye por separado (las demas quedan con
-    alpha=1, es decir sin intervenir), siguiendo el analisis por capa de
-    Hao et al. 2021 -- ver seccion 4.1 del documento de metodologia."""
+    `a_pred[-1, target]` (salida en el ultimo timestep de la ventana;
+    target segun resolve_target). Cada capa se atribuye por separado (las
+    demas quedan con alpha=1, es decir sin intervenir), siguiendo el
+    analisis por capa de Hao et al. 2021 -- ver seccion 4.1 del documento
+    de metodologia."""
     model = agent.model
-    T = obs.shape[0]
-
-    obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-    action_t = torch.as_tensor(action, dtype=torch.float32, device=device).unsqueeze(0)
-    reward_t = torch.as_tensor(reward, dtype=torch.float32, device=device).unsqueeze(0)
-    discount_t = torch.as_tensor(discount, dtype=torch.float32, device=device).unsqueeze(0)
-    timestep_t = torch.as_tensor(timestep, dtype=torch.long, device=device).unsqueeze(0)
-
-    rtg = DTAgent.compute_returns_to_go(reward_t, discount_t) / agent.return_scale
+    obs_t, action_t, rtg, timestep_t = window_tensors(agent, obs, action, rtg, timestep, device)
+    target_idx = resolve_target(agent, obs_t, action_t, rtg, timestep_t, target_dim)
 
     attrs = []
     for layer in model.blocks:
@@ -144,7 +186,7 @@ def att_attr(agent, obs, action, reward, discount, timestep, target_dim, m, devi
 
             attn.forward = types.MethodType(bound, attn)
             pred_a = model(rtg, obs_t, action_t, timesteps=timestep_t)
-            target = pred_a[0, -1, target_dim]
+            target = pred_a[0, -1, target_idx]
             (grad,) = torch.autograd.grad(target, capture[0])
             if step == m:
                 att_alpha1 = capture[0].detach()
@@ -177,7 +219,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--snapshot", required=True, help="Path al snapshot_*.pt")
     parser.add_argument("--agent", choices=["dt", "hdt"], required=True)
-    parser.add_argument("--task", choices=list(OBS_ACTION_DIMS), required=True)
+    parser.add_argument("--task", choices=TASKS, required=True)
     parser.add_argument("--episode", required=True, help="Path a un episode_*.npz ya convertido")
     parser.add_argument("--start-idx", type=int, default=None,
                          help="Indice inicial de la ventana (default: mitad del episodio)")
@@ -195,11 +237,11 @@ def main():
     ep_len = episode_len(load_episode(episode_path, args.task, None))
     start_idx = args.start_idx if args.start_idx is not None else max(1, ep_len // 2)
 
-    obs, action, reward, discount, timestep = load_window(
+    obs, action, rtg, timestep = load_window(
         args.task, episode_path, start_idx, traj_length
     )
     attr = att_attr(
-        agent, obs, action, reward, discount, timestep,
+        agent, obs, action, rtg, timestep,
         args.target_dim, args.m, args.device,
     )
 

@@ -1,0 +1,24 @@
+  [load_procgen_impala] Convnet and projection frozen.
+  [load_procgen_impala] Loaded from: /home/belforin/MaskDP_mmodal/pretrained_encoders/procgen_coinrun_easy_encoder.pt (source: sgoodfriend/ppo-procgen-coinrun-easy, env_id: coinrun, distribution_mode: easy)
+number of parameters: %e 3256143
+dt coinrun target_dim=0 (3 episodios x 3 posiciones = 9 ventanas)
+
+episode_10001_70.npz start=  13: rho=+0.157  dominante AttAttr=state  SARFA=state 
+episode_10001_70.npz start=  26: rho=+0.226  dominante AttAttr=state  SARFA=state 
+episode_10001_70.npz start=  38: rho=-0.363  dominante AttAttr=action SARFA=state 
+episode_10002_209.npz start=  48: rho=+0.085  dominante AttAttr=state  SARFA=state 
+episode_10002_209.npz start=  95: rho=-0.140  dominante AttAttr=state  SARFA=state 
+episode_10002_209.npz start= 142: rho=+0.255  dominante AttAttr=state  SARFA=state 
+episode_10006_95.npz start=  19: rho=+0.040  dominante AttAttr=state  SARFA=state 
+episode_10006_95.npz start=  38: rho=+0.244  dominante AttAttr=state  SARFA=state 
+episode_10006_95.npz start=  57: rho=+0.054  dominante AttAttr=state  SARFA=state 
+
+[agregado sobre 9 ventanas]
+  Spearman agregado (capas+heads) vs SARFA: media +0.062 +/- 0.191, rango [-0.363, +0.255]
+  Spearman capa 0 (sin agregar) vs SARFA: media +0.042 +/- 0.177
+  Spearman capa 1 (sin agregar) vs SARFA: media +0.076 +/- 0.214
+  Spearman capa 2 (sin agregar) vs SARFA: media +0.050 +/- 0.228
+  acuerdo en modalidad dominante: 8/9 (89%)
+  SARFA dominante por modalidad:   return=0, state=9, action=0
+  AttAttr dominante por modalidad: return=0, state=8, action=1
+  guardado: eval_results/interp_crossval_dt_coinrun_rtgfix.npz

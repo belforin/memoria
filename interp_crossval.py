@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from attattr import OBS_ACTION_DIMS, att_attr, load_agent, load_window
+from attattr import TASKS, att_attr, default_data_dir, load_agent, load_window
 from replay_buffer import episode_len, load_episode
 from sarfa import attattr_per_position, sarfa
 
@@ -57,10 +57,10 @@ def per_layer_scores(attr, traj_length):
 
 
 def run_window(agent, task, episode_path, start_idx, target_dim, m, device, traj_length):
-    obs, action, reward, discount, timestep = load_window(task, episode_path, start_idx, traj_length)
-    attr = att_attr(agent, obs, action, reward, discount, timestep, target_dim, m, device)
+    obs, action, rtg, timestep = load_window(task, episode_path, start_idx, traj_length)
+    attr = att_attr(agent, obs, action, rtg, timestep, target_dim, m, device)
     attattr_score = attattr_per_position(attr, traj_length)
-    sarfa_score, _, _, _ = sarfa(agent, obs, action, reward, discount, timestep, target_dim, device)
+    sarfa_score, _, _, _ = sarfa(agent, obs, action, rtg, timestep, target_dim, device)
 
     rho = _spearman(attattr_score, sarfa_score)
     layer_scores = per_layer_scores(attr, traj_length)
@@ -93,12 +93,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--snapshot", required=True, help="Path al snapshot_*.pt")
     parser.add_argument("--agent", choices=["dt", "hdt"], required=True)
-    parser.add_argument("--task", choices=list(OBS_ACTION_DIMS), required=True)
+    parser.add_argument("--task", choices=TASKS, required=True)
     parser.add_argument("--data-dir", default=None,
-                         help="Default: data/<task>_medium_expert/<task>")
+                         help="Default: data/<task>_medium_expert/<task> (data/coinrun para coinrun)")
+    parser.add_argument("--min-len", type=int, default=None,
+                         help="Largo minimo de episodio a considerar (default: traj_length, el minimo "
+                              "que admite una ventana). En CoinRun muchos episodios son de ~20 pasos: "
+                              "subirlo deja espacio para 3 posiciones de inicio distintas")
     parser.add_argument("--n-episodes", type=int, default=3)
     parser.add_argument("--n-starts", type=int, default=3)
-    parser.add_argument("--target-dim", type=int, default=0)
+    parser.add_argument("--target-dim", type=int, default=0,
+                         help="Dimension de accion (continua). En coinrun se ignora: se atribuye "
+                              "el logit de la accion argmax")
     parser.add_argument("--m", type=int, default=20)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--out", default=None, help="Path .npz donde guardar los resultados crudos")
@@ -107,8 +113,13 @@ def main():
     agent = load_agent(args.snapshot, args.agent, args.task, args.device)
     traj_length = agent.config.traj_length
 
-    data_dir = Path(args.data_dir) if args.data_dir else Path("data") / f"{args.task}_medium_expert" / args.task
-    episode_paths = sorted(data_dir.glob("episode_*.npz"))[: args.n_episodes]
+    data_dir = Path(args.data_dir) if args.data_dir else default_data_dir(args.task)
+    min_len = args.min_len if args.min_len is not None else traj_length
+    # largo sale del nombre (episode_<idx>_<len>.npz, ver convert_*/d4rl_data.py)
+    # para no abrir los ~14k episodios de CoinRun.
+    episode_paths = [
+        f for f in sorted(data_dir.glob("episode_*.npz")) if int(f.stem.split("_")[-1]) >= min_len
+    ][: args.n_episodes]
     assert len(episode_paths) == args.n_episodes, (
         f"se pidieron {args.n_episodes} episodios, hay {len(episode_paths)} en {data_dir}"
     )

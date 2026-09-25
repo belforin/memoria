@@ -1,0 +1,22 @@
+number of parameters: %e 725763
+dt hopper target_dim=0 (3 episodios x 3 posiciones = 9 ventanas)
+
+episode_0_470.npz start= 113: rho=-0.089  dominante AttAttr=state  SARFA=state 
+episode_0_470.npz start= 226: rho=-0.353  dominante AttAttr=action SARFA=state 
+episode_0_470.npz start= 338: rho=+0.286  dominante AttAttr=state  SARFA=state 
+episode_1000_406.npz start=  97: rho=-0.041  dominante AttAttr=state  SARFA=state 
+episode_1000_406.npz start= 194: rho=+0.414  dominante AttAttr=return SARFA=return
+episode_1000_406.npz start= 290: rho=-0.494  dominante AttAttr=return SARFA=state 
+episode_1001_476.npz start= 114: rho=-0.017  dominante AttAttr=state  SARFA=state 
+episode_1001_476.npz start= 228: rho=+0.296  dominante AttAttr=return SARFA=state 
+episode_1001_476.npz start= 343: rho=+0.441  dominante AttAttr=state  SARFA=state 
+
+[agregado sobre 9 ventanas]
+  Spearman agregado (capas+heads) vs SARFA: media +0.049 +/- 0.315, rango [-0.494, +0.441]
+  Spearman capa 0 (sin agregar) vs SARFA: media -0.072 +/- 0.318
+  Spearman capa 1 (sin agregar) vs SARFA: media +0.040 +/- 0.265
+  Spearman capa 2 (sin agregar) vs SARFA: media +0.015 +/- 0.403
+  acuerdo en modalidad dominante: 6/9 (67%)
+  SARFA dominante por modalidad:   return=1, state=8, action=0
+  AttAttr dominante por modalidad: return=3, state=5, action=1
+  guardado: eval_results/interp_crossval_dt_hopper_rtgfix.npz

@@ -15,7 +15,7 @@ forward), reemplazado por su "valor neutro":
   - return-to-go (R_t) y accion (a_t): 0.0 directo (no hay normalizacion
     de por medio para estas dos modalidades en el pipeline).
 
-Reusa OBS_ACTION_DIMS/load_agent/load_window de attattr.py -- mismo
+Reusa load_agent/load_window/window_tensors de attattr.py -- mismo
 contrato de datos (ventana real de un episodio ya convertido,
 misma convencion de alineacion que OfflineReplayBuffer._sample), para que
 ambos metodos se puedan correr sobre exactamente la misma ventana y
@@ -28,79 +28,105 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from scipy.ndimage import gaussian_filter
 
-from agent.dt import DTAgent
-from attattr import OBS_ACTION_DIMS, att_attr, load_agent, load_window
+from attattr import TASKS, att_attr, load_agent, load_window, resolve_target, window_tensors
+from third_party.sarfa_saliency import computeSaliencyUsingSarfa
 
 EPS = 1e-8
 
+# CoinRun (accion discreta, pixeles): valores neutros de cada modalidad.
+# - estado: frame completo difuminado con blur gaussiano sigma=3, igual que
+#   la saliencia temporal de Benjamin (eval_sarfa.py::compute_state_saliency,
+#   temporal_blur_sigma=null -> perturbation.blur_sigma=3.0, rama
+#   upstream/hier-procgen-sarfa).
+# - accion: indice 4, el NOOP de Procgen (no hay "accion 0" neutra en un
+#   espacio discreto; 0 es LEFT+DOWN).
+PIXEL_BLUR_SIGMA = 3.0
+PROCGEN_NOOP = 4
 
-def _forward_action(model, rtg, obs, action, timesteps):
+
+def _forward_last(model, rtg, obs, action, timesteps):
     with torch.no_grad():
         pred_a = model(rtg, obs, action, timesteps=timesteps)
-    return pred_a[0, -1].cpu().numpy()  # (action_dim,) -- prediccion en el ultimo timestep
+    return pred_a[0, -1].cpu().numpy()  # (action_dim,) o (num_actions,) logits -- ultimo timestep
 
 
-def sarfa(agent, obs, action, reward, discount, timestep, target_dim, device):
-    """
-    Devuelve (sarfa_score, specificity, relevance, delta_a), cada uno un
-    array (n_candidates,) salvo delta_a que es (n_candidates, action_dim),
-    para las posiciones candidatas r = 0..query_idx (inclusive) de la
-    secuencia intercalada (R_0,s_0,a_0,...,R_{T-1},s_{T-1}) -- el token
-    a_{T-1} (la propia prediccion objetivo) queda excluido: la mascara
-    causal ya lo bloquea de influir sobre si mismo, perturbarlo no tiene
-    sentido. `target_dim` es la dimension de accion `j` de interes (ver
-    METODOLOGIA seccion 4.1).
-    """
-    model = agent.model
-    T = obs.shape[0]
-    query_idx = 3 * (T - 1) + 1  # posicion del token s_{T-1} en la secuencia intercalada
-    n_candidates = query_idx + 1
-
-    obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-    action_t = torch.as_tensor(action, dtype=torch.float32, device=device).unsqueeze(0)
-    reward_t = torch.as_tensor(reward, dtype=torch.float32, device=device).unsqueeze(0)
-    discount_t = torch.as_tensor(discount, dtype=torch.float32, device=device).unsqueeze(0)
-    timestep_t = torch.as_tensor(timestep, dtype=torch.long, device=device).unsqueeze(0)
-
-    rtg = DTAgent.compute_returns_to_go(reward_t, discount_t) / agent.return_scale
-
-    a_ref = _forward_action(model, rtg, obs_t, action_t, timestep_t)
-
-    action_dim = a_ref.shape[0]
-    delta_a = np.zeros((n_candidates, action_dim), dtype=np.float64)
-    for idx in range(n_candidates):
-        t, mod = idx // 3, idx % 3  # mod: 0=return, 1=state, 2=action
-
-        obs_p, action_p, rtg_p = obs_t.clone(), action_t.clone(), rtg.clone()
-        if mod == 0:
-            rtg_p[0, t] = 0.0
-        elif mod == 1:
+def _ablate(model, obs_p, action_p, rtg_p, mod, t):
+    """Reemplaza in-place el token (t, mod) por su valor neutro -- ver
+    docstring del modulo y constantes de CoinRun arriba."""
+    if mod == 0:
+        rtg_p[0, t] = 0.0
+    elif mod == 1:
+        if model.pixel_obs:
+            frame = obs_p[0, t].cpu().numpy()
+            blurred = gaussian_filter(frame, sigma=(PIXEL_BLUR_SIGMA, PIXEL_BLUR_SIGMA, 0))
+            obs_p[0, t] = torch.as_tensor(blurred, dtype=obs_p.dtype, device=obs_p.device)
+        else:
             # ablar a la media (buffer obs_mean): tras la normalizacion
             # z-score interna del modelo esto equivale a "estado promedio",
             # es decir 0 en el espacio normalizado -- ver docstring.
             obs_p[0, t] = model.obs_mean
-        else:
-            action_p[0, t] = 0.0
+    else:
+        action_p[0, t] = PROCGEN_NOOP if model.discrete_actions else 0.0
 
-        a_pert = _forward_action(model, rtg_p, obs_p, action_p, timestep_t)
-        delta_a[idx] = a_pert - a_ref
 
-    dj = np.abs(delta_a[:, target_dim])
-    specificity = (dj - dj.min()) / (dj.max() - dj.min() + EPS)
+def sarfa(agent, obs, action, rtg, timestep, target_dim, device):
+    """
+    Devuelve (sarfa_score, specificity, relevance, delta), cada uno un
+    array (n_candidates,) salvo delta que es (n_candidates, n_out), para
+    las posiciones candidatas r = 0..query_idx (inclusive) de la
+    secuencia intercalada (R_0,s_0,a_0,...,R_{T-1},s_{T-1}) -- el token
+    a_{T-1} (la propia prediccion objetivo) queda excluido: la mascara
+    causal ya lo bloquea de influir sobre si mismo, perturbarlo no tiene
+    sentido.
 
-    l1_total = np.abs(delta_a).sum(axis=1)
-    relevance = dj / (l1_total + EPS)
+    Accion continua: `target_dim` es la dimension de accion `j` de interes
+    y specificity/relevance son la reformulacion de la seccion 4.1.
+    Accion discreta (CoinRun): SARFA original de Puri et al. 2020 sobre los
+    logits (third_party/sarfa_saliency.py, el mismo vendorizado por
+    Benjamin), para la accion argmax; specificity = dP y relevance = K de
+    esa implementacion, `target_dim` se ignora. `delta` son los cambios en
+    la salida cruda (accion continua o logits).
+    """
+    model = agent.model
+    obs_t, action_t, rtg_t, timestep_t = window_tensors(agent, obs, action, rtg, timestep, device)
+    T = obs_t.shape[1]
+    query_idx = 3 * (T - 1) + 1  # posicion del token s_{T-1} en la secuencia intercalada
+    n_candidates = query_idx + 1
 
-    sarfa_score = 2 * specificity * relevance / (specificity + relevance + EPS)
-    return sarfa_score, specificity, relevance, delta_a
+    out_ref = _forward_last(model, rtg_t, obs_t, action_t, timestep_t)
+    a_hat = resolve_target(agent, obs_t, action_t, rtg_t, timestep_t, target_dim)
+
+    delta = np.zeros((n_candidates, out_ref.shape[0]), dtype=np.float64)
+    sarfa_score = np.zeros(n_candidates)
+    specificity = np.zeros(n_candidates)
+    relevance = np.zeros(n_candidates)
+    dict_before = {k: float(v) for k, v in enumerate(out_ref)}
+    for idx in range(n_candidates):
+        t, mod = idx // 3, idx % 3  # mod: 0=return, 1=state, 2=action
+        obs_p, action_p, rtg_p = obs_t.clone(), action_t.clone(), rtg_t.clone()
+        _ablate(model, obs_p, action_p, rtg_p, mod, t)
+        out_pert = _forward_last(model, rtg_p, obs_p, action_p, timestep_t)
+        delta[idx] = out_pert - out_ref
+        if model.discrete_actions:
+            dict_after = {k: float(v) for k, v in enumerate(out_pert)}
+            answer, dP, K, _, _, _ = computeSaliencyUsingSarfa(a_hat, dict_before, dict_after)
+            sarfa_score[idx], specificity[idx], relevance[idx] = answer, dP, K
+
+    if not model.discrete_actions:
+        dj = np.abs(delta[:, a_hat])
+        specificity = (dj - dj.min()) / (dj.max() - dj.min() + EPS)
+        l1_total = np.abs(delta).sum(axis=1)
+        relevance = dj / (l1_total + EPS)
+        sarfa_score = 2 * specificity * relevance / (specificity + relevance + EPS)
+    return sarfa_score, specificity, relevance, delta
 
 
 MODALITY_NAMES = {0: "return", 1: "state", 2: "action"}
 
 
-def group_ablation(agent, obs, action, reward, discount, timestep, target_dim, device,
-                    delta_a=None):
+def group_ablation(agent, obs, action, rtg, timestep, target_dim, device, delta_a=None):
     """
     Prueba la hipotesis de redundancia entre tokens vecinos de una misma
     modalidad (METODOLOGIA_DT_HDT.md seccion 4.3, "en curso"): en vez de
@@ -111,49 +137,37 @@ def group_ablation(agent, obs, action, reward, discount, timestep, target_dim, d
     aporta poco porque sus vecinos cargan info casi equivalente, pero
     juntos sí importan), el efecto de grupo deberia ser
     desproporcionadamente mayor que la suma de los efectos individuales.
+    En accion discreta, j es el logit de la accion argmax.
 
     `delta_a`: si ya se corrio sarfa() sobre esta misma ventana/target, se
-    puede pasar su delta_a para no recalcular los efectos individuales.
+    puede pasar su delta para no recalcular los efectos individuales.
 
     Devuelve un dict {modalidad: {"group": float, "sum_individual": float,
     "max_individual": float, "n_tokens": int}}.
     """
     model = agent.model
-    T = obs.shape[0]
+    obs_t, action_t, rtg_t, timestep_t = window_tensors(agent, obs, action, rtg, timestep, device)
+    T = obs_t.shape[1]
     query_idx = 3 * (T - 1) + 1
 
-    obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-    action_t = torch.as_tensor(action, dtype=torch.float32, device=device).unsqueeze(0)
-    reward_t = torch.as_tensor(reward, dtype=torch.float32, device=device).unsqueeze(0)
-    discount_t = torch.as_tensor(discount, dtype=torch.float32, device=device).unsqueeze(0)
-    timestep_t = torch.as_tensor(timestep, dtype=torch.long, device=device).unsqueeze(0)
-
-    rtg = DTAgent.compute_returns_to_go(reward_t, discount_t) / agent.return_scale
-    a_ref = _forward_action(model, rtg, obs_t, action_t, timestep_t)
+    out_ref = _forward_last(model, rtg_t, obs_t, action_t, timestep_t)
+    j = resolve_target(agent, obs_t, action_t, rtg_t, timestep_t, target_dim)
 
     if delta_a is None:
-        _, _, _, delta_a = sarfa(agent, obs, action, reward, discount, timestep, target_dim, device)
+        _, _, _, delta_a = sarfa(agent, obs, action, rtg, timestep, target_dim, device)
 
     results = {}
     for mod in range(3):
         positions = [idx for idx in range(query_idx + 1) if idx % 3 == mod]
-        t_positions = [idx // 3 for idx in positions]
 
-        obs_p, action_p, rtg_p = obs_t.clone(), action_t.clone(), rtg.clone()
-        if mod == 0:
-            for t in t_positions:
-                rtg_p[0, t] = 0.0
-        elif mod == 1:
-            for t in t_positions:
-                obs_p[0, t] = model.obs_mean
-        else:
-            for t in t_positions:
-                action_p[0, t] = 0.0
+        obs_p, action_p, rtg_p = obs_t.clone(), action_t.clone(), rtg_t.clone()
+        for idx in positions:
+            _ablate(model, obs_p, action_p, rtg_p, mod, idx // 3)
 
-        a_pert_group = _forward_action(model, rtg_p, obs_p, action_p, timestep_t)
-        group_j = float(abs(a_pert_group[target_dim] - a_ref[target_dim]))
+        out_group = _forward_last(model, rtg_p, obs_p, action_p, timestep_t)
+        group_j = float(abs(out_group[j] - out_ref[j]))
 
-        individual_js = np.abs(delta_a[positions, target_dim])
+        individual_js = np.abs(delta_a[positions, j])
         results[MODALITY_NAMES[mod]] = dict(
             group=group_j,
             sum_individual=float(individual_js.sum()),
@@ -186,7 +200,7 @@ def attattr_per_position(attr, traj_length):
     return row[: query_idx + 1]
 
 
-def cross_validate(agent, obs, action, reward, discount, timestep, target_dim, m, device,
+def cross_validate(agent, obs, action, rtg, timestep, target_dim, m, device,
                     traj_length, top_k=5):
     """
     Corre AttAttr y SARFA sobre la MISMA ventana/checkpoint y compara
@@ -196,10 +210,10 @@ def cross_validate(agent, obs, action, reward, discount, timestep, target_dim, m
     HDT. Reporta correlacion de Spearman entre ambos scores por posicion
     y overlap de sus respectivos top-k.
     """
-    attr = att_attr(agent, obs, action, reward, discount, timestep, target_dim, m, device)
+    attr = att_attr(agent, obs, action, rtg, timestep, target_dim, m, device)
     attattr_score = attattr_per_position(attr, traj_length)
 
-    sarfa_score, _, _, _ = sarfa(agent, obs, action, reward, discount, timestep, target_dim, device)
+    sarfa_score, _, _, _ = sarfa(agent, obs, action, rtg, timestep, target_dim, device)
 
     assert attattr_score.shape == sarfa_score.shape, (
         f"shapes no calzan: attattr {attattr_score.shape} vs sarfa {sarfa_score.shape}"
@@ -235,7 +249,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--snapshot", required=True, help="Path al snapshot_*.pt")
     parser.add_argument("--agent", choices=["dt", "hdt"], required=True)
-    parser.add_argument("--task", choices=list(OBS_ACTION_DIMS), required=True)
+    parser.add_argument("--task", choices=TASKS, required=True)
     parser.add_argument("--episode", required=True, help="Path a un episode_*.npz ya convertido")
     parser.add_argument("--start-idx", type=int, default=None,
                          help="Indice inicial de la ventana (default: mitad del episodio)")
@@ -256,12 +270,12 @@ def main():
     ep_len = episode_len(load_episode(episode_path, args.task, None))
     start_idx = args.start_idx if args.start_idx is not None else max(1, ep_len // 2)
 
-    obs, action, reward, discount, timestep = load_window(
+    obs, action, rtg, timestep = load_window(
         args.task, episode_path, start_idx, traj_length
     )
 
     sarfa_score, specificity, relevance, delta_a = sarfa(
-        agent, obs, action, reward, discount, timestep, args.target_dim, args.device
+        agent, obs, action, rtg, timestep, args.target_dim, args.device
     )
 
     print(
@@ -273,7 +287,7 @@ def main():
 
     if args.cross_validate:
         cross_validate(
-            agent, obs, action, reward, discount, timestep, args.target_dim, args.m,
+            agent, obs, action, rtg, timestep, args.target_dim, args.m,
             args.device, traj_length,
         )
 

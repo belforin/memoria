@@ -93,11 +93,10 @@ def normalize_return(raw_return, env_name, distribution_mode):
 
 def rollout(agent, env, traj_length, episode_length, target_return, max_steps, seed,
             frames=None):
-    # Procgen no expone un seed() por episodio como mujoco-gym -- el
-    # muestreo de nivel dentro de [start_level, start_level+num_levels) ya
-    # lo controla ProcgenEnv internamente (num_levels=0 = distribucion
-    # infinita). `seed` acá solo se usa para variar la semilla global entre
-    # episodios (numpy), no hace falta pasarsela al entorno.
+    # Procgen no expone un seed() por episodio como mujoco-gym: que niveles
+    # salen dentro de [start_level, start_level+num_levels) lo decide el
+    # rand_seed de ProcgenEnv (fijado en eval_split). `seed` aca solo varia
+    # la semilla global de numpy entre episodios.
     np.random.seed(seed)
     obs = env.reset()  # (1, H, W, C)
     obs_frame = obs[0]
@@ -146,9 +145,15 @@ def rollout(agent, env, traj_length, episode_length, target_return, max_steps, s
 def eval_split(agent, traj_length, episode_length, target_return, max_steps,
                 env_name, num_levels, start_level, distribution_mode, num_episodes, seed,
                 video_path=None, video_episodes=0, video_fps=15, video_scale=8):
+    # rand_seed fijo: sin el, procgen/env.py sortea uno con
+    # random.SystemRandom() en cada instancia y el mismo snapshot con el
+    # mismo --seed ve niveles distintos en cada corrida
+    # (METODOLOGIA_DT_HDT.md seccion 2.10). Con el fijo, todos los
+    # agentes/semillas se evaluan sobre la misma secuencia de niveles.
     env = procgen.ProcgenEnv(
         num_envs=1, env_name=env_name, num_levels=num_levels,
         start_level=start_level, distribution_mode=distribution_mode,
+        rand_seed=seed,
     )
     env = VecExtractDictObs(env, "rgb")
 

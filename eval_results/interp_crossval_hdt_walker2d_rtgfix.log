@@ -1,0 +1,22 @@
+number of parameters: %e 713734
+hdt walker2d target_dim=0 (3 episodios x 3 posiciones = 9 ventanas)
+
+episode_0_1000.npz start= 245: rho=-0.051  dominante AttAttr=action SARFA=state 
+episode_0_1000.npz start= 490: rho=+0.060  dominante AttAttr=action SARFA=action
+episode_0_1000.npz start= 736: rho=+0.470  dominante AttAttr=state  SARFA=return
+episode_1000_788.npz start= 192: rho=+0.157  dominante AttAttr=state  SARFA=state 
+episode_1000_788.npz start= 384: rho=+0.291  dominante AttAttr=state  SARFA=state 
+episode_1000_788.npz start= 577: rho=-0.011  dominante AttAttr=state  SARFA=return
+episode_1001_701.npz start= 170: rho=+0.326  dominante AttAttr=action SARFA=state 
+episode_1001_701.npz start= 341: rho=+0.409  dominante AttAttr=action SARFA=return
+episode_1001_701.npz start= 512: rho=+0.578  dominante AttAttr=action SARFA=state 
+
+[agregado sobre 9 ventanas]
+  Spearman agregado (capas+heads) vs SARFA: media +0.248 +/- 0.209, rango [-0.051, +0.578]
+  Spearman capa 0 (sin agregar) vs SARFA: media +0.080 +/- 0.242
+  Spearman capa 1 (sin agregar) vs SARFA: media +0.227 +/- 0.208
+  Spearman capa 2 (sin agregar) vs SARFA: media +0.099 +/- 0.172
+  acuerdo en modalidad dominante: 3/9 (33%)
+  SARFA dominante por modalidad:   return=3, state=5, action=1
+  AttAttr dominante por modalidad: return=0, state=4, action=5
+  guardado: eval_results/interp_crossval_hdt_walker2d_rtgfix.npz

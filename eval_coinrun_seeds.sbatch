@@ -8,6 +8,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
+#SBATCH --comment="Evaluacion CoinRun DT vs HDT (3 semillas) con niveles de Procgen reproducibles"
 
 set -euo pipefail
 
