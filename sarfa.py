@@ -137,7 +137,7 @@ def group_ablation(agent, obs, action, rtg, timestep, target_dim, device, delta_
     aporta poco porque sus vecinos cargan info casi equivalente, pero
     juntos sí importan), el efecto de grupo deberia ser
     desproporcionadamente mayor que la suma de los efectos individuales.
-    En accion discreta, j es el logit de la accion argmax.
+    En accion discreta el efecto es |ΔP(a_hat)|, a_hat = accion argmax.
 
     `delta_a`: si ya se corrio sarfa() sobre esta misma ventana/target, se
     puede pasar su delta para no recalcular los efectos individuales.
@@ -156,6 +156,17 @@ def group_ablation(agent, obs, action, rtg, timestep, target_dim, device, delta_
     if delta_a is None:
         _, _, _, delta_a = sarfa(agent, obs, action, rtg, timestep, target_dim, device)
 
+    # Accion discreta: el efecto se mide como cambio en P(a_hat) (softmax de
+    # los logits), igual que dP en SARFA -- el logit crudo no sirve porque
+    # los logits se pueden mover todos juntos sin cambiar la politica.
+    if model.discrete_actions:
+        def effect(out):
+            e = np.exp(out - out.max())
+            return float(e[j] / e.sum())
+    else:
+        def effect(out):
+            return float(out[j])
+
     results = {}
     for mod in range(3):
         positions = [idx for idx in range(query_idx + 1) if idx % 3 == mod]
@@ -165,14 +176,20 @@ def group_ablation(agent, obs, action, rtg, timestep, target_dim, device, delta_
             _ablate(model, obs_p, action_p, rtg_p, mod, idx // 3)
 
         out_group = _forward_last(model, rtg_p, obs_p, action_p, timestep_t)
-        group_j = float(abs(out_group[j] - out_ref[j]))
+        group_j = float(abs(effect(out_group) - effect(out_ref)))
 
-        individual_js = np.abs(delta_a[positions, j])
+        individual_js = np.array([abs(effect(out_ref + delta_a[i]) - effect(out_ref)) for i in positions])
         results[MODALITY_NAMES[mod]] = dict(
             group=group_j,
             sum_individual=float(individual_js.sum()),
             max_individual=float(individual_js.max()),
             n_tokens=len(positions),
+            # efecto sobre toda la salida, no solo j: norma L2 del cambio
+            # (accion continua completa, o vector de logits)
+            group_l2=float(np.linalg.norm(out_group - out_ref)),
+            # solo accion discreta: si sacar la modalidad entera cambia la
+            # accion que el agente elegiria (argmax)
+            argmax_changed=(bool(out_group.argmax() != j) if model.discrete_actions else None),
         )
     return results
 

@@ -1,0 +1,42 @@
+  [load_procgen_impala] Convnet and projection frozen.
+  [load_procgen_impala] Loaded from: /home/belforin/MaskDP_mmodal/pretrained_encoders/procgen_coinrun_easy_encoder.pt (source: sgoodfriend/ppo-procgen-coinrun-easy, env_id: coinrun, distribution_mode: easy)
+number of parameters: %e 3256143
+dt coinrun (10 episodios x 3 posiciones)
+
+episode_10001_70.npz start=  13: return: grupo=0.2966 max_ind=0.0403  state: grupo=0.1657 max_ind=0.1729  action: grupo=0.0655 max_ind=0.0262
+episode_10001_70.npz start=  26: return: grupo=0.0136 max_ind=0.0100  state: grupo=0.1002 max_ind=0.0979  action: grupo=0.0261 max_ind=0.0174
+episode_10001_70.npz start=  38: return: grupo=0.0722 max_ind=0.0240  state: grupo=0.1745 max_ind=0.1561  action: grupo=0.2320 max_ind=0.0597
+episode_10002_209.npz start=  48: return: grupo=0.0169 max_ind=0.0094  state: grupo=0.2304 max_ind=0.0960  action: grupo=0.0719 max_ind=0.0914
+episode_10002_209.npz start=  95: return: grupo=0.0458 max_ind=0.0040  state: grupo=0.1995 max_ind=0.1860  action: grupo=0.0235 max_ind=0.0162
+episode_10002_209.npz start= 142: return: grupo=0.0767 max_ind=0.0201  state: grupo=0.3887 max_ind=0.3189  action: grupo=0.2704 max_ind=0.0762
+episode_10006_95.npz start=  19: return: grupo=0.1232 max_ind=0.0066  state: grupo=0.1630 max_ind=0.0754  action: grupo=0.0147 max_ind=0.0083
+episode_10006_95.npz start=  38: return: grupo=0.1720 max_ind=0.0056  state: grupo=0.2803 max_ind=0.2143  action: grupo=0.0192 max_ind=0.0183
+episode_10006_95.npz start=  57: return: grupo=0.1903 max_ind=0.0216  state: grupo=0.7651 max_ind=0.5664  action: grupo=0.0191 max_ind=0.0215
+episode_10007_127.npz start=  27: return: grupo=0.0095 max_ind=0.0049  state: grupo=0.0947 max_ind=0.0758  action: grupo=0.0315 max_ind=0.0245
+episode_10007_127.npz start=  54: return: grupo=0.0461 max_ind=0.0050  state: grupo=0.0969 max_ind=0.0718  action: grupo=0.0855 max_ind=0.0749
+episode_10007_127.npz start=  81: return: grupo=0.0076 max_ind=0.0065  state: grupo=0.0751 max_ind=0.0440  action: grupo=0.0666 max_ind=0.0254
+episode_10010_190.npz start=  43: return: grupo=0.0766 max_ind=0.0110  state: grupo=0.3054 max_ind=0.3040  action: grupo=0.0191 max_ind=0.0133
+episode_10010_190.npz start=  86: return: grupo=0.0328 max_ind=0.0034  state: grupo=0.0939 max_ind=0.0288  action: grupo=0.0069 max_ind=0.0055
+episode_10010_190.npz start= 128: return: grupo=0.0147 max_ind=0.0054  state: grupo=0.1943 max_ind=0.0618  action: grupo=0.0373 max_ind=0.0125
+episode_10012_92.npz start=  18: return: grupo=0.0381 max_ind=0.0146  state: grupo=0.4925 max_ind=0.4518  action: grupo=0.0343 max_ind=0.0208
+episode_10012_92.npz start=  36: return: grupo=0.1168 max_ind=0.0245  state: grupo=0.3226 max_ind=0.3218  action: grupo=0.0039 max_ind=0.0427
+episode_10012_92.npz start=  55: return: grupo=0.0187 max_ind=0.0056  state: grupo=0.1501 max_ind=0.0944  action: grupo=0.0254 max_ind=0.0155
+episode_10015_79.npz start=  15: return: grupo=0.0827 max_ind=0.0113  state: grupo=0.0784 max_ind=0.0387  action: grupo=0.0078 max_ind=0.0286
+episode_10015_79.npz start=  30: return: grupo=0.0363 max_ind=0.0275  state: grupo=0.1665 max_ind=0.0937  action: grupo=0.0446 max_ind=0.0406
+episode_10015_79.npz start=  45: return: grupo=0.0011 max_ind=0.0000  state: grupo=0.8109 max_ind=0.9178  action: grupo=0.0000 max_ind=0.0000
+episode_10016_116.npz start=  24: return: grupo=0.0321 max_ind=0.0192  state: grupo=0.3854 max_ind=0.2996  action: grupo=0.2540 max_ind=0.0338
+episode_10016_116.npz start=  48: return: grupo=0.0188 max_ind=0.0053  state: grupo=0.0359 max_ind=0.1136  action: grupo=0.0215 max_ind=0.0077
+episode_10016_116.npz start=  73: return: grupo=0.0151 max_ind=0.0087  state: grupo=0.0236 max_ind=0.0584  action: grupo=0.0687 max_ind=0.0161
+episode_10018_148.npz start=  32: return: grupo=0.1416 max_ind=0.0040  state: grupo=0.2491 max_ind=0.1592  action: grupo=0.0703 max_ind=0.0236
+episode_10018_148.npz start=  64: return: grupo=0.0266 max_ind=0.0041  state: grupo=0.2130 max_ind=0.2024  action: grupo=0.0053 max_ind=0.0107
+episode_10018_148.npz start=  97: return: grupo=0.0815 max_ind=0.0124  state: grupo=0.4385 max_ind=0.4440  action: grupo=0.1238 max_ind=0.0370
+episode_10019_149.npz start=  32: return: grupo=0.0033 max_ind=0.0020  state: grupo=0.0625 max_ind=0.0500  action: grupo=0.0121 max_ind=0.0055
+episode_10019_149.npz start=  65: return: grupo=0.0506 max_ind=0.0050  state: grupo=0.0315 max_ind=0.0182  action: grupo=0.0374 max_ind=0.0354
+episode_10019_149.npz start=  98: return: grupo=0.1018 max_ind=0.0097  state: grupo=0.2639 max_ind=0.1307  action: grupo=0.0781 max_ind=0.0168
+
+[agregado sobre 30 ventanas] mediana (media)
+  modalidad            grupo   max individual    grupo/max_ind         grupo L2  argmax cambia
+  return     0.0420 (0.0653)  0.0076 (0.0111)    5.61 (8.65)  1.6574 (2.3861)  9/30 (30%)
+  state      0.1844 (0.2351)  0.1221 (0.1955)    1.27 (1.44)  6.0388 (7.2371)  18/30 (60%)
+  action     0.0329 (0.0592)  0.0212 (0.0275)    1.57 (2.08)  1.5445 (1.7388)  7/30 (23%)
+  guardado: eval_results/group_ablation_dt_coinrun_rtgfix.npz

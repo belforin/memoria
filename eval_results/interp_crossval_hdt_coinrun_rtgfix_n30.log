@@ -1,0 +1,45 @@
+  [load_procgen_impala] Convnet and projection frozen.
+  [load_procgen_impala] Loaded from: /home/belforin/MaskDP_mmodal/pretrained_encoders/procgen_coinrun_easy_encoder.pt (source: sgoodfriend/ppo-procgen-coinrun-easy, env_id: coinrun, distribution_mode: easy)
+number of parameters: %e 8506703
+hdt coinrun target_dim=0 (10 episodios x 3 posiciones = 30 ventanas)
+
+episode_10001_70.npz start=  13: rho=+0.226  dominante AttAttr=state  SARFA=state 
+episode_10001_70.npz start=  26: rho=+0.379  dominante AttAttr=action SARFA=state 
+episode_10001_70.npz start=  38: rho=+0.026  dominante AttAttr=action SARFA=return
+episode_10002_209.npz start=  48: rho=+0.099  dominante AttAttr=action SARFA=state 
+episode_10002_209.npz start=  95: rho=+0.163  dominante AttAttr=action SARFA=state 
+episode_10002_209.npz start= 142: rho=+0.183  dominante AttAttr=action SARFA=state 
+episode_10006_95.npz start=  19: rho=+0.085  dominante AttAttr=action SARFA=action
+episode_10006_95.npz start=  38: rho=-0.146  dominante AttAttr=action SARFA=action
+episode_10006_95.npz start=  57: rho=+0.116  dominante AttAttr=state  SARFA=state 
+episode_10007_127.npz start=  27: rho=+0.231  dominante AttAttr=action SARFA=state 
+episode_10007_127.npz start=  54: rho=-0.001  dominante AttAttr=action SARFA=return
+episode_10007_127.npz start=  81: rho=+0.358  dominante AttAttr=action SARFA=return
+episode_10010_190.npz start=  43: rho=-0.030  dominante AttAttr=return SARFA=state 
+episode_10010_190.npz start=  86: rho=-0.181  dominante AttAttr=state  SARFA=state 
+episode_10010_190.npz start= 128: rho=+0.190  dominante AttAttr=action SARFA=action
+episode_10012_92.npz start=  18: rho=-0.078  dominante AttAttr=action SARFA=state 
+episode_10012_92.npz start=  36: rho=+0.389  dominante AttAttr=state  SARFA=return
+episode_10012_92.npz start=  55: rho=-0.086  dominante AttAttr=action SARFA=state 
+episode_10015_79.npz start=  15: rho=-0.021  dominante AttAttr=state  SARFA=action
+episode_10015_79.npz start=  30: rho=+0.384  dominante AttAttr=action SARFA=state 
+episode_10015_79.npz start=  45: rho=-0.040  dominante AttAttr=action SARFA=state 
+episode_10016_116.npz start=  24: rho=+0.106  dominante AttAttr=action SARFA=state 
+episode_10016_116.npz start=  48: rho=+0.162  dominante AttAttr=state  SARFA=return
+episode_10016_116.npz start=  73: rho=-0.322  dominante AttAttr=action SARFA=return
+episode_10018_148.npz start=  32: rho=+0.214  dominante AttAttr=action SARFA=state 
+episode_10018_148.npz start=  64: rho=+0.166  dominante AttAttr=action SARFA=action
+episode_10018_148.npz start=  97: rho=-0.071  dominante AttAttr=state  SARFA=state 
+episode_10019_149.npz start=  32: rho=+0.111  dominante AttAttr=action SARFA=action
+episode_10019_149.npz start=  65: rho=+0.058  dominante AttAttr=return SARFA=state 
+episode_10019_149.npz start=  98: rho=+0.269  dominante AttAttr=action SARFA=state 
+
+[agregado sobre 30 ventanas]
+  Spearman agregado (capas+heads) vs SARFA: media +0.098 +/- 0.172, rango [-0.322, +0.389]
+  Spearman capa 0 (sin agregar) vs SARFA: media +0.077 +/- 0.186
+  Spearman capa 1 (sin agregar) vs SARFA: media +0.034 +/- 0.161
+  Spearman capa 2 (sin agregar) vs SARFA: media +0.046 +/- 0.190
+  acuerdo en modalidad dominante: 9/30 (30%)
+  SARFA dominante por modalidad:   return=6, state=18, action=6
+  AttAttr dominante por modalidad: return=2, state=7, action=21
+  guardado: eval_results/interp_crossval_hdt_coinrun_rtgfix_n30.npz

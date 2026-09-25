@@ -1,0 +1,40 @@
+number of parameters: %e 712915
+hdt hopper (10 episodios x 3 posiciones)
+
+episode_0_470.npz start= 113: return: grupo=0.1209 max_ind=0.1210  state: grupo=0.5936 max_ind=0.8205  action: grupo=0.0551 max_ind=0.0233
+episode_0_470.npz start= 226: return: grupo=0.0104 max_ind=0.0045  state: grupo=0.6868 max_ind=0.7664  action: grupo=0.0047 max_ind=0.0014
+episode_0_470.npz start= 338: return: grupo=0.0329 max_ind=0.0067  state: grupo=0.8708 max_ind=0.5501  action: grupo=0.0415 max_ind=0.0201
+episode_1000_406.npz start=  97: return: grupo=0.1388 max_ind=0.0998  state: grupo=0.9453 max_ind=0.8133  action: grupo=0.0071 max_ind=0.0100
+episode_1000_406.npz start= 194: return: grupo=0.0167 max_ind=0.0117  state: grupo=0.4075 max_ind=0.2772  action: grupo=0.0665 max_ind=0.0088
+episode_1000_406.npz start= 290: return: grupo=0.1748 max_ind=0.0508  state: grupo=0.6047 max_ind=0.0797  action: grupo=0.0690 max_ind=0.0106
+episode_1001_476.npz start= 114: return: grupo=0.0163 max_ind=0.0253  state: grupo=0.6156 max_ind=0.4832  action: grupo=0.0055 max_ind=0.0030
+episode_1001_476.npz start= 228: return: grupo=0.1592 max_ind=0.1297  state: grupo=0.6404 max_ind=0.9846  action: grupo=0.0042 max_ind=0.0652
+episode_1001_476.npz start= 343: return: grupo=0.0447 max_ind=0.0249  state: grupo=0.1968 max_ind=0.2702  action: grupo=0.0036 max_ind=0.0075
+episode_1002_420.npz start= 100: return: grupo=0.0623 max_ind=0.0215  state: grupo=0.3214 max_ind=0.5138  action: grupo=0.0069 max_ind=0.0147
+episode_1002_420.npz start= 200: return: grupo=0.0384 max_ind=0.0142  state: grupo=0.1595 max_ind=0.1946  action: grupo=0.1017 max_ind=0.0078
+episode_1002_420.npz start= 301: return: grupo=0.0505 max_ind=0.0698  state: grupo=0.1060 max_ind=0.2960  action: grupo=0.0114 max_ind=0.0246
+episode_1003_271.npz start=  63: return: grupo=0.0494 max_ind=0.0132  state: grupo=0.0021 max_ind=0.3552  action: grupo=0.0474 max_ind=0.0230
+episode_1003_271.npz start= 126: return: grupo=0.0298 max_ind=0.0219  state: grupo=0.2841 max_ind=0.2189  action: grupo=0.0515 max_ind=0.0286
+episode_1003_271.npz start= 189: return: grupo=0.0343 max_ind=0.0209  state: grupo=0.1755 max_ind=0.2385  action: grupo=0.0702 max_ind=0.0203
+episode_1004_648.npz start= 157: return: grupo=0.0443 max_ind=0.0165  state: grupo=0.2498 max_ind=0.8387  action: grupo=0.0165 max_ind=0.0079
+episode_1004_648.npz start= 314: return: grupo=0.0332 max_ind=0.0241  state: grupo=0.6030 max_ind=0.7537  action: grupo=0.0231 max_ind=0.0638
+episode_1004_648.npz start= 472: return: grupo=0.0225 max_ind=0.0120  state: grupo=0.3864 max_ind=0.8606  action: grupo=0.0022 max_ind=0.0035
+episode_1005_502.npz start= 121: return: grupo=0.0871 max_ind=0.0183  state: grupo=0.0288 max_ind=0.1994  action: grupo=0.0071 max_ind=0.0106
+episode_1005_502.npz start= 242: return: grupo=0.0036 max_ind=0.0106  state: grupo=0.1520 max_ind=0.2743  action: grupo=0.0329 max_ind=0.0064
+episode_1005_502.npz start= 362: return: grupo=0.0062 max_ind=0.0078  state: grupo=0.4239 max_ind=0.3745  action: grupo=0.0003 max_ind=0.0181
+episode_1006_314.npz start=  74: return: grupo=0.0217 max_ind=0.0240  state: grupo=0.5865 max_ind=0.7616  action: grupo=0.0121 max_ind=0.0043
+episode_1006_314.npz start= 148: return: grupo=0.0443 max_ind=0.0102  state: grupo=0.1814 max_ind=0.3715  action: grupo=0.0043 max_ind=0.0077
+episode_1006_314.npz start= 221: return: grupo=0.0114 max_ind=0.0116  state: grupo=0.6360 max_ind=0.7833  action: grupo=0.0151 max_ind=0.0233
+episode_1007_487.npz start= 117: return: grupo=0.0018 max_ind=0.0309  state: grupo=0.1781 max_ind=0.2350  action: grupo=0.0311 max_ind=0.0087
+episode_1007_487.npz start= 234: return: grupo=0.0463 max_ind=0.0365  state: grupo=0.2605 max_ind=0.0188  action: grupo=0.0195 max_ind=0.0168
+episode_1007_487.npz start= 351: return: grupo=0.1272 max_ind=0.1602  state: grupo=0.7669 max_ind=0.9389  action: grupo=0.0076 max_ind=0.0032
+episode_1008_470.npz start= 113: return: grupo=0.0261 max_ind=0.0257  state: grupo=0.8079 max_ind=0.4024  action: grupo=0.0386 max_ind=0.0048
+episode_1008_470.npz start= 226: return: grupo=0.0015 max_ind=0.0076  state: grupo=0.5949 max_ind=0.3543  action: grupo=0.0147 max_ind=0.0031
+episode_1008_470.npz start= 338: return: grupo=0.0796 max_ind=0.0903  state: grupo=0.0927 max_ind=0.0281  action: grupo=0.0182 max_ind=0.0060
+
+[agregado sobre 30 ventanas] mediana (media)
+  modalidad            grupo   max individual    grupo/max_ind         grupo L2
+  return     0.0364 (0.0512)  0.0217 (0.0374)    1.37 (1.78)  0.0920 (0.1461)
+  state      0.3970 (0.4186)  0.3730 (0.4686)    0.81 (1.59)  0.9256 (1.0436)
+  action     0.0158 (0.0263)  0.0094 (0.0152)    2.06 (2.74)  0.0373 (0.0539)
+  guardado: eval_results/group_ablation_hdt_hopper_rtgfix.npz

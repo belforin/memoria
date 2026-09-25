@@ -1129,6 +1129,46 @@ a `ProcgenEnv` en `eval_coinrun.py`/`eval_coinrun_seeds.py` haría los
 resultados reproducibles de verdad, a costa de invalidar la comparación
 con todo lo ya reportado en este documento).
 
+**Arreglado y re-evaluado (2026-09-25, job 29791, punto 16).**
+`eval_coinrun.py::eval_split` ahora pasa `rand_seed=seed` (default 0) a
+`ProcgenEnv`. Verificado: dos corridas seguidas del mismo snapshot con el
+mismo seed dan exactamente los mismos episodios (pasos y retornos). Todos
+los agentes y semillas se evalúan sobre la **misma secuencia de niveles**,
+así que la comparación DT vs. HDT pasa a ser pareada. Mismos snapshots,
+100 episodios por split y semilla. El log anterior (sin `rand_seed`) se
+renombró a `eval_results/eval_coinrun_seeds_rtgfix_sin_randseed.log`.
+
+Score normalizado (tasa de éxito = (score+1)/2, entre paréntesis):
+
+| agente | split | s1 | s2 | s3 | media ± std (semillas) | antes, sin `rand_seed` |
+|---|---|---|---|---|---|---|
+| dt | train | 0.880 | 0.880 | 0.900 | **0.887 ± 0.009** (94%) | 0.773 ± 0.025 |
+| dt | val | 0.380 | 0.580 | 0.600 | **0.520 ± 0.099** (76%) | 0.460 ± 0.049 |
+| dt | test | 0.560 | 0.600 | 0.560 | **0.573 ± 0.019** (79%) | 0.540 ± 0.086 |
+| hdt | train | 0.880 | 0.900 | 0.840 | **0.873 ± 0.025** (94%) | 0.813 ± 0.068 |
+| hdt | val | 0.720 | 0.720 | 0.680 | **0.707 ± 0.019** (85%) | 0.500 ± 0.071 |
+| hdt | test | 0.640 | 0.580 | 0.500 | **0.573 ± 0.057** (79%) | 0.620 ± 0.123 |
+
+**Lectura:**
+1. **Train y test: empate.** DT y HDT quedan prácticamente iguales (train
+   0.887 vs. 0.873; test 0.573 los dos).
+2. **Val: HDT mejor.** 0.707 vs. 0.520 (85% vs. 76% de éxito), y las 3
+   semillas de HDT (0.68-0.72) quedan por encima de las 3 de DT
+   (0.38-0.60). Es la única diferencia consistente, pero no se repite en
+   test (niveles ≥250, distribución abierta), así que no alcanza para decir
+   que HDT generaliza mejor en general. Val tiene solo 50 niveles y 100
+   episodios, y el resultado depende de qué niveles tocaron con
+   `rand_seed=0`.
+3. **El ruido por muestreo de niveles es del mismo orden que las
+   diferencias entre agentes.** Mismos snapshots, solo cambian los niveles:
+   DT train pasa de 0.773 a 0.887 y HDT val de 0.500 a 0.707. Con 100
+   episodios, el error estándar de la tasa de éxito es ≈5 pp (≈0.1 en
+   score). Para una conclusión firme habría que promediar varios
+   `rand_seed` de evaluación, o subir los episodios por split.
+
+Log: `eval_results/eval_coinrun_seeds_rtgfix.log` (y
+`maskdp_eval_coinrun_seeds_29791.{out,err}`). Sin errores, 38 min en CPU.
+
 **Nota sobre un error de esta sección (corregido 2026-09-22):** la primera
 versión reportaba la tanda anterior en tasa de éxito (%) y esta tanda
 directamente en "score normalizado" (rango [-1,1], p.ej. "0.28"), sin
@@ -1849,6 +1889,15 @@ una conclusión DT vs. HDT — pero ahora con más elementos para decidir.
 
 ### 4.4 Validación cruzada repetida sobre los snapshots con rtg corregido (opción 3 de §4.3, 2026-09-22)
 
+> **⚠ Invalidada (2026-09-25), ver §4.5.** Los scripts de interpretabilidad
+> seguían calculando el return-to-go con la fórmula anterior al fix
+> (sobre la ventana de 20 pasos y descontada), así que estos snapshots
+> recibieron un rtg fuera de distribución. En particular, **"AttAttr marca
+> return como dominante en 9/9 ventanas" era un efecto de ese bug** y
+> desaparece con el rtg correcto. El texto de abajo queda como registro;
+> los logs originales se renombraron a
+> `eval_results/interp_crossval_{hdt,dt}_halfcheetah_rtgfix_rtgventana.{log,npz}`.
+
 Punto 11 del resumen de próximos pasos: repetir §4.3 sobre checkpoints
 entrenados con el rtg corregido (§2.10/§2.12), para ver si un rtg que sí
 distingue episodios buenos de malos (antes casi constante, máx. 0.099)
@@ -1898,7 +1947,173 @@ de entrenamiento.
 
 Sin cambios de código en `attattr.py`/`sarfa.py` — solo el script nuevo
 `interp_crossval.py` y apuntar a los snapshots rtgfix. Resultados crudos
-en `eval_results/interp_crossval_{hdt,dt}_halfcheetah_rtgfix.{log,npz}`.
+en `eval_results/interp_crossval_{hdt,dt}_halfcheetah_rtgfix_rtgventana.{log,npz}`
+(renombrados, ver aviso al inicio de esta sección).
+
+### 4.5 Interpretabilidad en las 4 tareas con el rtg correcto (2026-09-25)
+
+#### 4.5.1 Bug encontrado: los scripts de interpretabilidad usaban el rtg anterior al fix
+
+`attattr.py`/`sarfa.py` construían el return-to-go de la ventana con
+`DTAgent.compute_returns_to_go(reward, discount)`, es decir **sobre los 20
+pasos de la ventana y descontado**: justo el rtg defectuoso que se corrigió
+en entrenamiento en §2.10. El fix de §2.10 solo tocó `replay_buffer.py` y
+`update_actor` (que reciben el rtg del episodio completo desde el buffer).
+Los scripts de interpretabilidad lo recalculaban aparte y quedaron
+desalineados. Consecuencia: en §4.4 los snapshots rtgfix recibieron un rtg
+distinto al de entrenamiento: en D4RL, la suma descontada de 20 pasos
+de recompensa (~0.05-0.2 tras dividir por `return_scale=1000`) en vez del
+retorno restante del episodio (~1.0 al inicio de un episodio experto).
+
+**Fix:** `attattr.py::load_window` ahora devuelve el rtg crudo del episodio
+completo, sin descontar, en `start_idx+i`, idéntico a `episode["rtg"]` de
+`OfflineReplayBuffer` con `return_to_go=True`. `att_attr`, `sarfa`,
+`group_ablation` y `cross_validate` reciben `rtg` en lugar de
+`reward, discount`. Verificado en hopper: rtg de la ventana ≈1018 crudo,
+≈1.0 escalado, en distribución.
+
+#### 4.5.2 Extensión a CoinRun (píxeles + acción discreta)
+
+Se agregó soporte para CoinRun a `attattr.py`, `sarfa.py` e
+`interp_crossval.py` (`--task coinrun`), siguiendo el código de Benjamín
+(ramas `upstream/hier-procgen-attattr` y `upstream/hier-procgen-sarfa`):
+
+| | D4RL (acción continua) | CoinRun (acción discreta) |
+|---|---|---|
+| Objetivo de atribución | `a_pred[-1, target_dim]` (§4.1) | logit de la acción argmax, como `analysis/attn_attr.py` de Benjamín |
+| Fórmula SARFA | reformulación continua de §4.1 | **SARFA original** (Puri et al. 2020) sobre logits, `third_party/sarfa_saliency.py` vendorizado tal cual de su rama |
+| Ablación de estado | `obs_mean` (0 tras normalizar) | frame completo difuminado (blur gaussiano σ=3), igual que su saliencia temporal (`eval_sarfa.py`, `temporal_blur_sigma=null → 3.0`) |
+| Ablación de acción | 0.0 | índice 4 (NOOP de Procgen; 0 es LEFT+DOWN, no neutro) |
+| Ablación de return | 0.0 | 0.0 |
+
+Las ventanas de CoinRun salen del dataset offline de entrenamiento
+(`data/coinrun`), igual que en D4RL, no de rollouts en vivo como en
+Benjamín. Solo se usan episodios de ≥60 pasos (`--min-len 60`), porque
+muchos duran ~20 y no dan lugar a 3 posiciones de inicio distintas.
+`interp_crossval.py` ganó `--min-len` y lee el largo del nombre del
+archivo (`episode_<idx>_<len>.npz`) para no abrir los ~14k episodios.
+
+No se implementó su saliencia **espacial** (parches difuminados sobre el
+frame actual): no es comparable a nivel de token con AttAttr. Queda como
+opción para figuras cualitativas.
+
+#### 4.5.3 Protocolo
+
+Snapshots: mejor semilla por (tarea, agente) según §2.12 (halfcheetah dt s1
+/ hdt s3, hopper dt s1 / hdt s2, walker2d dt s2 / hdt s1) y semilla 1 en
+CoinRun (dt y hdt). `target_dim=0` en D4RL. Dos tamaños de muestra:
+
+- **9 ventanas** (3 episodios × 3 posiciones al 25/50/75%): igual que
+  §4.3/§4.4, para comparar directo. Logs:
+  `eval_results/interp_crossval_<agente>_<tarea>_rtgfix.{log,npz}`.
+- **30 ventanas** (10 episodios × 3 posiciones): la muestra principal; con 9
+  los números eran demasiado ruidosos. Logs: `..._rtgfix_n30.{log,npz}`.
+
+Todo en CPU, `maskdp-env`, cada corrida de 30 ventanas tarda unos minutos.
+
+#### 4.5.4 Resultados: validación cruzada AttAttr vs. SARFA (30 ventanas)
+
+| tarea | agente | Spearman agregado (media ± std) | acuerdo modalidad dominante | SARFA dominante (R/S/A) | AttAttr dominante (R/S/A) |
+|---|---|---|---|---|---|
+| halfcheetah | dt | +0.073 ± 0.295 | 4/30 (13%) | 0/27/3 | 5/3/22 |
+| halfcheetah | hdt | +0.033 ± 0.212 | 13/30 (43%) | 2/28/0 | 6/13/11 |
+| hopper | dt | +0.108 ± 0.253 | 16/30 (53%) | 6/23/1 | 11/13/6 |
+| hopper | hdt | +0.092 ± 0.225 | 12/30 (40%) | 7/23/0 | 5/14/11 |
+| walker2d | dt | +0.247 ± 0.211 | 12/30 (40%) | 12/15/3 | 10/5/15 |
+| walker2d | hdt | +0.295 ± 0.191 | 9/30 (30%) | 10/14/6 | 4/11/15 |
+| coinrun | dt | +0.176 ± 0.214 | 23/30 (77%) | 1/26/3 | 0/25/5 |
+| coinrun | hdt | +0.098 ± 0.172 | 9/30 (30%) | 6/18/6 | 2/7/21 |
+
+(R/S/A = return/state/action.)
+
+**Lectura:**
+1. **El hallazgo de §4.4 era un artefacto.** Con el rtg correcto, AttAttr ya
+   no marca "return" como dominante: en halfcheetah pasa de 9/9 a 5/30
+   (DT) y 6/30 (HDT). Sin el bug, AttAttr no tiene ninguna preferencia
+   sistemática por return.
+2. **La correlación es débil pero ya no es nula, y depende de la tarea.** La
+   media es positiva en las 8 combinaciones. En walker2d (~+0.25-0.30) y
+   CoinRun DT (+0.18) está claramente por encima de 0 (con 30 ventanas el
+   error estándar es ≈0.04). En halfcheetah sigue ≈0. Los dos métodos no
+   son intercambiables, pero tampoco miden cosas sin relación.
+3. **SARFA marca "state" como dominante en casi todo** (14-28 de 30 según
+   tarea). Cuando se ablaciona un token solo, el estado es lo que más mueve
+   la acción. AttAttr es más disperso y en varias tareas se inclina por
+   "action" (halfcheetah DT, walker2d, CoinRun HDT).
+4. **CoinRun DT es el único caso donde los dos métodos coinciden bien**
+   (77% de acuerdo, ambos "state"). En CoinRun HDT el acuerdo baja a 30%
+   porque AttAttr se va a "action" (21/30).
+5. **DT vs. HDT:** no hay un patrón consistente entre tareas. HDT acuerda
+   más que DT en halfcheetah y menos en hopper, walker2d y CoinRun. Es una
+   sola semilla por agente, así que las diferencias entre agentes de una
+   misma tarea no se pueden separar de la varianza entre semillas.
+
+#### 4.5.5 Resultados: ablación por grupos en las 4 tareas (30 ventanas)
+
+Prueba en todas las tareas la hipótesis de redundancia de §4.3: un token
+solo pesa poco pero la modalidad entera sí. Nuevo script
+`interp_group_ablation.py`, con las mismas 30 ventanas que 4.5.4. Por
+modalidad, ablaciona todos sus tokens a la vez ("grupo") y lo compara con
+el mayor efecto de un token individual ("max ind"). Efecto: `|Δa_0|` en
+D4RL, `|ΔP(a_hat)|` en CoinRun (probabilidad softmax de la acción argmax,
+igual que `dP` de SARFA). El logit crudo no sirve en discreto porque los
+logits se pueden mover todos juntos sin cambiar la política: en una
+ventana de prueba, sacar los return cambió el logit elegido solo 0.09
+pero igual cambió la acción. `group_ablation` en `sarfa.py` ganó además
+`group_l2` (cambio en toda la salida) y `argmax_changed` (solo discreto).
+
+Medianas sobre 30 ventanas (medias en los logs,
+`eval_results/group_ablation_<agente>_<tarea>_rtgfix.{log,npz}`):
+
+| tarea | agente | return: grupo / max ind (ratio) | state: grupo / max ind (ratio) | action: grupo / max ind (ratio) | CoinRun: % ventanas donde cambia la acción (R/S/A) |
+|---|---|---|---|---|---|
+| halfcheetah | dt | 0.0030 / 0.0016 (2.44) | 0.483 / 0.498 (1.00) | 0.0024 / 0.0017 (1.58) | — |
+| halfcheetah | hdt | 0.0062 / 0.0021 (4.11) | 0.153 / 0.144 (0.96) | 0.0055 / 0.0014 (3.87) | — |
+| hopper | dt | 0.036 / 0.009 (2.91) | 0.332 / 0.295 (1.09) | 0.018 / 0.005 (3.35) | — |
+| hopper | hdt | 0.036 / 0.022 (1.37) | 0.397 / 0.373 (0.81) | 0.016 / 0.009 (2.06) | — |
+| walker2d | dt | 0.035 / 0.043 (0.92) | 0.307 / 0.308 (1.00) | 0.012 / 0.006 (2.49) | — |
+| walker2d | hdt | 0.039 / 0.027 (1.22) | 0.308 / 0.264 (1.08) | 0.021 / 0.007 (3.36) | — |
+| coinrun | dt | 0.042 / 0.008 (5.61) | 0.184 / 0.122 (1.27) | 0.033 / 0.021 (1.57) | 30% / 60% / 23% |
+| coinrun | hdt | 0.077 / 0.061 (1.28) | 0.196 / 0.171 (0.99) | 0.041 / 0.025 (1.83) | 33% / 60% / 20% |
+
+**Lectura:**
+1. **"State" domina en términos absolutos en todas las tareas**, y su
+   ratio grupo/max ≈1: casi todo el efecto lo carga un solo token de
+   estado (el más importante individualmente), no una suma de tokens
+   redundantes. Consistente con que SARFA marque "state" como dominante
+   (4.5.4).
+2. **Return y action sí muestran redundancia** (ratio >1 en casi todos los
+   casos, hasta ~4-5.6): juntos pesan varias veces más que su mejor token
+   individual. La hipótesis de §4.3 se sostiene, pero solo para esas dos
+   modalidades.
+3. **En D4RL el efecto absoluto de return es chico.** Sacar el return-to-go
+   entero mueve `a_0` ~0.003-0.04, frente a ~0.15-0.5 de state (10-100×
+   menos). En estas ventanas (datos expertos, en distribución), la acción
+   depende casi solo del estado.
+4. **En CoinRun el return sí importa:** sacar todo el rtg cambia la acción
+   elegida en 30% (DT) y 33% (HDT) de las ventanas, y sacar todas las
+   acciones pasadas en ~20%.
+5. **Posible diferencia DT vs. HDT en cómo usan el rtg en CoinRun:** en DT
+   el efecto del rtg está repartido (max individual 0.008, ratio 5.6); en
+   HDT un solo token de return ya pesa bastante (0.061, ratio 1.3). HDT
+   también tiene mayor efecto de grupo (0.077 vs. 0.042). Con una sola
+   semilla por agente es solo una pista, no una conclusión; habría que
+   repetirlo en las 3 semillas.
+
+#### 4.5.6 Estado de la decisión de §4.3 (cómo reportar AttAttr/SARFA)
+
+Las opciones 2 (ablación por grupos) y 3 (DT además de HDT, más checkpoints)
+de §4.3 ya están hechas, ahora sobre las 4 tareas y con el rtg correcto.
+Resumen para el informe:
+- Los dos métodos correlacionan débilmente (Spearman ~0 a +0.3 según
+  tarea): no se validan mutuamente, pero tampoco se contradicen.
+- SARFA y la ablación por grupos coinciden: el estado es lo que más pesa
+  causalmente en todas las tareas. AttAttr (atención) reparte la
+  importancia entre las tres modalidades.
+- Sigue abierta la opción 1: reportar los dos métodos por separado con esta
+  limitación documentada. Es la recomendada; falta la confirmación del
+  usuario.
+
 
 ## 5. Selección de variante HDT de referencia
 
@@ -2042,6 +2257,9 @@ convertidos viven en `data/<dataset>/<domain>/episode_*.npz`
    0/9. Refuerza la hipótesis de redundancia de §4.3: el rtg corregido le
    da al modelo una razón real para *atender* a los tokens de retorno,
    pero no cambia que dependa causalmente de ellos de forma individual.
+   **⚠ Invalidado (2026-09-25, punto 13):** los scripts de interpretabilidad
+   seguían usando el rtg anterior al fix, y el "return dominante 9/9" de
+   AttAttr era un efecto de eso. Resultados válidos en §4.5.
 12. [x] Confirmar si la diferencia de generalización DT vs. HDT en CoinRun
    rtgfix (§2.10 — DT sobreajusta más a train, HDT generaliza mejor a
    val/test) es señal real o solo varianza de la única semilla entrenada
@@ -2053,4 +2271,50 @@ convertidos viven en `data/<dataset>/<domain>/episode_*.npz`
    `eval_coinrun.py` nunca fija `rand_seed` en `ProcgenEnv`, así que cada
    corrida sortea niveles distintos aunque se use el mismo `--seed` —
    fuente de ruido adicional no documentada hasta ahora, pendiente de
-   arreglo de baja prioridad (ver detalle en §2.10).
+   arreglo de baja prioridad (ver detalle en §2.10). **Arreglado en el punto 16.**
+13. [x] Corregir el rtg en los scripts de interpretabilidad (§4.5.1,
+   2026-09-25). `attattr.py`/`sarfa.py` recalculaban el rtg sobre la
+   ventana y descontado (el bug de §2.10), desalineados del entrenamiento.
+   Ahora usan el rtg del episodio completo, igual que el buffer. Invalida
+   §4.4 (aviso agregado ahí) y el punto 11.
+14. [x] Interpretabilidad en hopper, walker2d y CoinRun, y halfcheetah de
+   nuevo con el rtg correcto (§4.5, 2026-09-25). Soporte de CoinRun en
+   `attattr.py`/`sarfa.py`/`interp_crossval.py`, basado en el código de
+   Benjamín (logit argmax, SARFA original de Puri, blur del frame para
+   ablacionar estado; §4.5.2). Validación cruzada sobre 9 y 30 ventanas
+   (§4.5.4): Spearman débil pero positivo (~0 en halfcheetah, ~+0.25-0.3
+   en walker2d), SARFA marca "state" dominante en casi todo, AttAttr más
+   disperso. CoinRun DT es el único caso de buen acuerdo (77%).
+15. [x] Ablación por grupos en las 4 tareas × DT/HDT
+   (`interp_group_ablation.py`, §4.5.5). "State" domina y lo carga un solo
+   token (ratio ≈1). Return y action son redundantes (ratio >1), pero en
+   D4RL el efecto absoluto del return es 10-100× menor que el de state. En
+   CoinRun sacar todo el rtg cambia la acción en ~30% de las ventanas.
+   Posible diferencia DT/HDT en cómo usan el rtg en CoinRun, con una sola
+   semilla (pendiente, punto 18).
+16. [x] Evaluación de CoinRun reproducible: `eval_coinrun.py::eval_split`
+   pasa `rand_seed=seed` a `ProcgenEnv` (verificado: dos corridas con el
+   mismo seed dan exactamente los mismos episodios). Todos los agentes y
+   semillas ven ahora la misma secuencia de niveles. Re-evaluado con
+   `eval_coinrun_seeds.py` (job 29791; resultados en §2.10): train y test
+   empatados (test 0.573 los dos), HDT mejor solo en val (0.707 vs. 0.520,
+   las 3 semillas de HDT por encima de las 3 de DT). El cambio respecto de
+   la evaluación anterior (mismos snapshots, otros niveles) es del mismo
+   orden que las diferencias entre agentes; para una conclusión firme hay
+   que promediar varios `rand_seed` (punto 22).
+17. [ ] **Decisión del usuario:** cómo reportar AttAttr/SARFA en el informe
+   (§4.5.6). Recomendado: opción 1 de §4.3, reportar los dos por separado
+   con la limitación documentada.
+18. [ ] Opcional: repetir la interpretabilidad (§4.5) sobre las 3 semillas
+   por agente, para separar las diferencias DT vs. HDT de la varianza
+   entre semillas, sobre todo el uso del rtg en CoinRun (§4.5.5 punto 5).
+19. [ ] Opcional: saliencia espacial en CoinRun (parches difuminados sobre
+   el frame, como Benjamín) para figuras cualitativas.
+20. [ ] Comparar contra los números reales de Benjamín (§0.1). Bloqueado
+   hasta tener su informe o tesis con las tablas.
+21. [ ] Informe final consolidado: tablas D4RL y CoinRun, videos,
+   interpretabilidad.
+22. [ ] Opcional: evaluar CoinRun con varios `rand_seed` de evaluación
+   (p. ej. 0-4) o más episodios por split, para separar el ruido por
+   muestreo de niveles (≈5 pp de tasa de éxito con 100 episodios) de la
+   diferencia DT vs. HDT en val (§2.10).

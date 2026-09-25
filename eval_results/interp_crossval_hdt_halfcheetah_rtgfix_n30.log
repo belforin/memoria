@@ -1,0 +1,43 @@
+number of parameters: %e 713734
+hdt halfcheetah target_dim=0 (10 episodios x 3 posiciones = 30 ventanas)
+
+episode_0_1000.npz start= 245: rho=-0.605  dominante AttAttr=return SARFA=state 
+episode_0_1000.npz start= 490: rho=-0.318  dominante AttAttr=action SARFA=state 
+episode_0_1000.npz start= 736: rho=+0.099  dominante AttAttr=return SARFA=return
+episode_1000_1000.npz start= 245: rho=-0.055  dominante AttAttr=state  SARFA=state 
+episode_1000_1000.npz start= 490: rho=+0.171  dominante AttAttr=return SARFA=state 
+episode_1000_1000.npz start= 736: rho=+0.088  dominante AttAttr=action SARFA=state 
+episode_1001_1000.npz start= 245: rho=+0.170  dominante AttAttr=state  SARFA=state 
+episode_1001_1000.npz start= 490: rho=+0.261  dominante AttAttr=state  SARFA=state 
+episode_1001_1000.npz start= 736: rho=+0.064  dominante AttAttr=state  SARFA=state 
+episode_1002_1000.npz start= 245: rho=-0.467  dominante AttAttr=action SARFA=state 
+episode_1002_1000.npz start= 490: rho=+0.113  dominante AttAttr=state  SARFA=state 
+episode_1002_1000.npz start= 736: rho=+0.021  dominante AttAttr=action SARFA=state 
+episode_1003_1000.npz start= 245: rho=-0.142  dominante AttAttr=return SARFA=state 
+episode_1003_1000.npz start= 490: rho=-0.019  dominante AttAttr=action SARFA=state 
+episode_1003_1000.npz start= 736: rho=-0.080  dominante AttAttr=state  SARFA=state 
+episode_1004_1000.npz start= 245: rho=+0.013  dominante AttAttr=return SARFA=state 
+episode_1004_1000.npz start= 490: rho=-0.074  dominante AttAttr=action SARFA=state 
+episode_1004_1000.npz start= 736: rho=-0.076  dominante AttAttr=action SARFA=state 
+episode_1005_1000.npz start= 245: rho=+0.227  dominante AttAttr=state  SARFA=state 
+episode_1005_1000.npz start= 490: rho=+0.279  dominante AttAttr=action SARFA=state 
+episode_1005_1000.npz start= 736: rho=+0.023  dominante AttAttr=state  SARFA=state 
+episode_1006_1000.npz start= 245: rho=+0.143  dominante AttAttr=state  SARFA=return
+episode_1006_1000.npz start= 490: rho=+0.081  dominante AttAttr=state  SARFA=state 
+episode_1006_1000.npz start= 736: rho=+0.411  dominante AttAttr=state  SARFA=state 
+episode_1007_1000.npz start= 245: rho=-0.006  dominante AttAttr=action SARFA=state 
+episode_1007_1000.npz start= 490: rho=+0.236  dominante AttAttr=state  SARFA=state 
+episode_1007_1000.npz start= 736: rho=+0.262  dominante AttAttr=action SARFA=state 
+episode_1008_1000.npz start= 245: rho=+0.138  dominante AttAttr=return SARFA=state 
+episode_1008_1000.npz start= 490: rho=+0.140  dominante AttAttr=state  SARFA=state 
+episode_1008_1000.npz start= 736: rho=-0.096  dominante AttAttr=action SARFA=state 
+
+[agregado sobre 30 ventanas]
+  Spearman agregado (capas+heads) vs SARFA: media +0.033 +/- 0.212, rango [-0.605, +0.411]
+  Spearman capa 0 (sin agregar) vs SARFA: media -0.251 +/- 0.266
+  Spearman capa 1 (sin agregar) vs SARFA: media -0.019 +/- 0.220
+  Spearman capa 2 (sin agregar) vs SARFA: media +0.067 +/- 0.219
+  acuerdo en modalidad dominante: 13/30 (43%)
+  SARFA dominante por modalidad:   return=2, state=28, action=0
+  AttAttr dominante por modalidad: return=6, state=13, action=11
+  guardado: eval_results/interp_crossval_hdt_halfcheetah_rtgfix_n30.npz
