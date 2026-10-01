@@ -29,7 +29,8 @@ import numpy as np
 from attattr import TASKS, default_data_dir, load_agent, load_window
 from interp_crossval import pick_start_indices
 from replay_buffer import episode_len, load_episode
-from sarfa import MODALITY_NAMES, group_ablation
+from attattr import token_modalities
+from sarfa import group_ablation
 
 FIELDS = ("group", "sum_individual", "max_individual", "group_l2")
 
@@ -62,7 +63,7 @@ def main():
 
     print(f"{args.agent} {args.task} ({args.n_episodes} episodios x {args.n_starts} posiciones)\n")
 
-    rows = {m: {f: [] for f in FIELDS + ("argmax_changed",)} for m in MODALITY_NAMES.values()}
+    rows = {m: {f: [] for f in FIELDS + ("argmax_changed",)} for m in token_modalities(agent.model)}
     for ep_path in episode_paths:
         ep_len = episode_len(load_episode(ep_path, args.task, None))
         for start_idx in pick_start_indices(ep_len, traj_length, args.n_starts):
@@ -77,7 +78,7 @@ def main():
                 for mod, r in res.items()
             ))
 
-    n = len(rows["return"]["group"])
+    n = len(rows["state"]["group"])
     print(f"\n[agregado sobre {n} ventanas] mediana (media)")
     print(f"  {'modalidad':<9} {'grupo':>16} {'max individual':>16} {'grupo/max_ind':>16} {'grupo L2':>16}"
           + ("  argmax cambia" if agent.model.discrete_actions else ""))

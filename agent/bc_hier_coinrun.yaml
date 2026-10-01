@@ -1,0 +1,40 @@
+# @package agent
+# Etapa BC (METODOLOGIA_DT_HDT.md seccion 7): behaviour cloning autoregresivo
+# sin token de return, topologia jerarquica. Hiperparametros igualados a
+# upstream/hier-procgen:agent/mdp_procgen.yaml de Benjamin Mancilla.
+_target_: agent.hdt.HDTAgent
+name: bc_hier
+obs_shape: ??? # (64,64,3)
+action_shape: ??? # (15,)
+device: ${device}
+lr: 1e-4
+use_tb: ${use_tb}
+# ver bc_uni_coinrun.yaml
+weight_decay: 0.0
+warmup_steps: 1
+use_adamw: false
+batch_size: 128
+stddev_schedule: 0.2
+transformer_cfg:
+  use_rtg: false
+  # 2 capas por modalidad + 1 conjunta, analogo a sus 2 de encoder por
+  # stream + 1 de fusion. 4.469.007 params entrenables sin el IMPALA,
+  # +6,6% vs. su reduce_enc (4.191.375). Se mantiene n_embd=256 porque con
+  # otro valor la proyeccion del IMPALA no carga y queda aleatoria y
+  # congelada (ver seccion 7.3).
+  n_embd: 256
+  n_head: 4
+  n_obs_layer: 2
+  n_act_layer: 2
+  n_layer: 1
+  embd_pdrop: 0.0
+  resid_pdrop: 0.0
+  attn_pdrop: 0.0
+  traj_length: 64
+  episode_length: 1000
+  return_scale: 10  # no se usa sin rtg
+  pixel_encoder_type: procgen_impala
+  pretrained_encoder_path: pretrained_encoders/procgen_coinrun_easy_encoder.pt
+  discrete_actions: true
+  num_actions: 15
+  label_smoothing: 0.0

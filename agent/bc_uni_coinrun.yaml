@@ -1,0 +1,36 @@
+# @package agent
+# Etapa BC (METODOLOGIA_DT_HDT.md seccion 7): behaviour cloning autoregresivo
+# sin token de return, topologia unistream. Hiperparametros igualados a
+# upstream/hier-procgen:agent/mdp_procgen.yaml de Benjamin Mancilla.
+_target_: agent.dt.DTAgent
+name: bc_uni
+obs_shape: ??? # (64,64,3)
+action_shape: ??? # (15,)
+device: ${device}
+lr: 1e-4
+use_tb: ${use_tb}
+# Benjamin: AdamW con weight_decay=0, betas por defecto y sin warmup, que
+# equivale a Adam simple (use_adamw=false).
+weight_decay: 0.0
+warmup_steps: 1
+use_adamw: false
+batch_size: 128
+stddev_schedule: 0.2
+transformer_cfg:
+  use_rtg: false
+  # 5 bloques a 256 = sus 3 de encoder + 2 de decoder. 4.213.007 params
+  # entrenables sin el IMPALA congelado, +1,4% vs. su unistream (4.155.663).
+  n_embd: 256
+  n_head: 4
+  n_layer: 5
+  embd_pdrop: 0.0
+  resid_pdrop: 0.0
+  attn_pdrop: 0.0
+  traj_length: 64
+  episode_length: 1000
+  return_scale: 10  # no se usa sin rtg
+  pixel_encoder_type: procgen_impala
+  pretrained_encoder_path: pretrained_encoders/procgen_coinrun_easy_encoder.pt
+  discrete_actions: true
+  num_actions: 15
+  label_smoothing: 0.0

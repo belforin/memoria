@@ -22,6 +22,9 @@ replay_buffer_dir: data
 replay_buffer_size: 100000000
 replay_buffer_num_workers: 16
 batch_size: ${agent.batch_size}
+# true: episodios mas cortos que traj_length se rellenan y se enmascaran en
+# la loss en vez de romper el muestreo (METODOLOGIA_DT_HDT.md seccion 7)
+pad_short_episodes: false
 # misc
 seed: 1
 device: cuda

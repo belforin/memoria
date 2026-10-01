@@ -30,7 +30,10 @@ import numpy as np
 import torch
 from scipy.ndimage import gaussian_filter
 
-from attattr import TASKS, att_attr, load_agent, load_window, resolve_target, window_tensors
+from attattr import (
+    TASKS, att_attr, load_agent, load_window, query_index, resolve_target, token_modalities,
+    window_tensors,
+)
 from third_party.sarfa_saliency import computeSaliencyUsingSarfa
 
 EPS = 1e-8
@@ -54,10 +57,11 @@ def _forward_last(model, rtg, obs, action, timesteps):
 
 def _ablate(model, obs_p, action_p, rtg_p, mod, t):
     """Reemplaza in-place el token (t, mod) por su valor neutro -- ver
-    docstring del modulo y constantes de CoinRun arriba."""
-    if mod == 0:
+    docstring del modulo y constantes de CoinRun arriba. `mod` es el nombre
+    de la modalidad (ver attattr.token_modalities)."""
+    if mod == "return":
         rtg_p[0, t] = 0.0
-    elif mod == 1:
+    elif mod == "state":
         if model.pixel_obs:
             frame = obs_p[0, t].cpu().numpy()
             blurred = gaussian_filter(frame, sigma=(PIXEL_BLUR_SIGMA, PIXEL_BLUR_SIGMA, 0))
@@ -92,7 +96,9 @@ def sarfa(agent, obs, action, rtg, timestep, target_dim, device):
     model = agent.model
     obs_t, action_t, rtg_t, timestep_t = window_tensors(agent, obs, action, rtg, timestep, device)
     T = obs_t.shape[1]
-    query_idx = 3 * (T - 1) + 1  # posicion del token s_{T-1} en la secuencia intercalada
+    modalities = token_modalities(model)
+    n = len(modalities)
+    query_idx = query_index(modalities, T)  # posicion del token s_{T-1} en la secuencia intercalada
     n_candidates = query_idx + 1
 
     out_ref = _forward_last(model, rtg_t, obs_t, action_t, timestep_t)
@@ -104,7 +110,7 @@ def sarfa(agent, obs, action, rtg, timestep, target_dim, device):
     relevance = np.zeros(n_candidates)
     dict_before = {k: float(v) for k, v in enumerate(out_ref)}
     for idx in range(n_candidates):
-        t, mod = idx // 3, idx % 3  # mod: 0=return, 1=state, 2=action
+        t, mod = idx // n, modalities[idx % n]
         obs_p, action_p, rtg_p = obs_t.clone(), action_t.clone(), rtg_t.clone()
         _ablate(model, obs_p, action_p, rtg_p, mod, t)
         out_pert = _forward_last(model, rtg_p, obs_p, action_p, timestep_t)
@@ -121,9 +127,6 @@ def sarfa(agent, obs, action, rtg, timestep, target_dim, device):
         relevance = dj / (l1_total + EPS)
         sarfa_score = 2 * specificity * relevance / (specificity + relevance + EPS)
     return sarfa_score, specificity, relevance, delta
-
-
-MODALITY_NAMES = {0: "return", 1: "state", 2: "action"}
 
 
 def group_ablation(agent, obs, action, rtg, timestep, target_dim, device, delta_a=None):
@@ -148,7 +151,9 @@ def group_ablation(agent, obs, action, rtg, timestep, target_dim, device, delta_
     model = agent.model
     obs_t, action_t, rtg_t, timestep_t = window_tensors(agent, obs, action, rtg, timestep, device)
     T = obs_t.shape[1]
-    query_idx = 3 * (T - 1) + 1
+    modalities = token_modalities(model)
+    n = len(modalities)
+    query_idx = query_index(modalities, T)
 
     out_ref = _forward_last(model, rtg_t, obs_t, action_t, timestep_t)
     j = resolve_target(agent, obs_t, action_t, rtg_t, timestep_t, target_dim)
@@ -168,18 +173,18 @@ def group_ablation(agent, obs, action, rtg, timestep, target_dim, device, delta_
             return float(out[j])
 
     results = {}
-    for mod in range(3):
-        positions = [idx for idx in range(query_idx + 1) if idx % 3 == mod]
+    for k, mod in enumerate(modalities):
+        positions = [idx for idx in range(query_idx + 1) if idx % n == k]
 
         obs_p, action_p, rtg_p = obs_t.clone(), action_t.clone(), rtg_t.clone()
         for idx in positions:
-            _ablate(model, obs_p, action_p, rtg_p, mod, idx // 3)
+            _ablate(model, obs_p, action_p, rtg_p, mod, idx // n)
 
         out_group = _forward_last(model, rtg_p, obs_p, action_p, timestep_t)
         group_j = float(abs(effect(out_group) - effect(out_ref)))
 
         individual_js = np.array([abs(effect(out_ref + delta_a[i]) - effect(out_ref)) for i in positions])
-        results[MODALITY_NAMES[mod]] = dict(
+        results[mod] = dict(
             group=group_j,
             sum_individual=float(individual_js.sum()),
             max_individual=float(individual_js.max()),
@@ -194,24 +199,24 @@ def group_ablation(agent, obs, action, rtg, timestep, target_dim, device, delta_
     return results
 
 
-def summarize(sarfa_score, traj_length, top_k=5):
+def summarize(sarfa_score, traj_length, top_k=5, modalities=("return", "state", "action")):
     """Mismo formato de salida que attattr.py::summarize, para poder
     comparar a simple vista."""
-    modality = {0: "return", 1: "state", 2: "action"}
+    n = len(modalities)
     order = np.argsort(-sarfa_score)[:top_k]
     print(f"  top-{top_k} posiciones clave por SARFA_j")
     for idx in order:
-        t, mod = idx // 3, idx % 3
-        print(f"    t={t:2d} ({modality[mod]:6s})  SARFA={sarfa_score[idx]:.6f}")
+        t, mod = idx // n, modalities[idx % n]
+        print(f"    t={t:2d} ({mod:6s})  SARFA={sarfa_score[idx]:.6f}")
 
 
-def attattr_per_position(attr, traj_length):
+def attattr_per_position(attr, traj_length, modalities=("return", "state", "action")):
     """Colapsa la atribucion de AttAttr (n_layer, n_head, 3T, 3T) a un
     score escalar por posicion candidata, comparable a sarfa_score: suma
     |atribucion| sobre heads y capas, fila del token de consulta
     (query_idx), restringido a las mismas posiciones candidatas que
     sarfa() (0..query_idx inclusive)."""
-    query_idx = 3 * (traj_length - 1) + 1
+    query_idx = query_index(modalities, traj_length)
     # (n_layer, n_head, 3T, 3T) -> sumar |.| sobre capas y heads -> (3T, 3T)
     row = np.abs(attr).sum(axis=(0, 1))[query_idx]  # (3T,)
     return row[: query_idx + 1]
@@ -228,7 +233,9 @@ def cross_validate(agent, obs, action, rtg, timestep, target_dim, m, device,
     y overlap de sus respectivos top-k.
     """
     attr = att_attr(agent, obs, action, rtg, timestep, target_dim, m, device)
-    attattr_score = attattr_per_position(attr, traj_length)
+    modalities = token_modalities(agent.model)
+    n = len(modalities)
+    attattr_score = attattr_per_position(attr, traj_length, modalities)
 
     sarfa_score, _, _, _ = sarfa(agent, obs, action, rtg, timestep, target_dim, device)
 
@@ -250,14 +257,13 @@ def cross_validate(agent, obs, action, rtg, timestep, target_dim, m, device,
     top_sarfa = set(np.argsort(-sarfa_score)[:top_k].tolist())
     overlap = len(top_attattr & top_sarfa)
 
-    modality = {0: "return", 1: "state", 2: "action"}
     print(f"\n[cross-validacion] correlacion de Spearman (AttAttr vs SARFA): {rho:.3f}")
     print(f"[cross-validacion] overlap top-{top_k}: {overlap}/{top_k}")
     print(f"  AttAttr top-{top_k}: " + ", ".join(
-        f"t={i // 3}({modality[i % 3]})" for i in sorted(top_attattr, key=lambda i: -attattr_score[i])
+        f"t={i // n}({modalities[i % n]})" for i in sorted(top_attattr, key=lambda i: -attattr_score[i])
     ))
     print(f"  SARFA   top-{top_k}: " + ", ".join(
-        f"t={i // 3}({modality[i % 3]})" for i in sorted(top_sarfa, key=lambda i: -sarfa_score[i])
+        f"t={i // n}({modalities[i % n]})" for i in sorted(top_sarfa, key=lambda i: -sarfa_score[i])
     ))
     return rho, overlap
 
@@ -300,7 +306,7 @@ def main():
         f"ventana=[{start_idx - 1}, {start_idx - 1 + traj_length}) de {episode_path.name}): "
         f"SARFA shape {sarfa_score.shape} ({len(sarfa_score)} candidatos)"
     )
-    summarize(sarfa_score, traj_length)
+    summarize(sarfa_score, traj_length, modalities=token_modalities(agent.model))
 
     if args.cross_validate:
         cross_validate(

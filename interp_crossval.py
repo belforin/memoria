@@ -22,11 +22,11 @@ from pathlib import Path
 
 import numpy as np
 
-from attattr import TASKS, att_attr, default_data_dir, load_agent, load_window
+from attattr import (
+    TASKS, att_attr, default_data_dir, load_agent, load_window, query_index, token_modalities,
+)
 from replay_buffer import episode_len, load_episode
 from sarfa import attattr_per_position, sarfa
-
-MODALITY_NAMES = {0: "return", 1: "state", 2: "action"}
 
 
 def _spearman(a, b):
@@ -39,37 +39,39 @@ def _spearman(a, b):
     return float(np.corrcoef(ra, rb)[0, 1])
 
 
-def _dominant_modality(score_per_position):
-    totals = np.zeros(3)
+def _dominant_modality(score_per_position, modalities):
+    n = len(modalities)
+    totals = np.zeros(n)
     for idx, s in enumerate(score_per_position):
-        totals[idx % 3] += abs(s)
-    return int(np.argmax(totals))
+        totals[idx % n] += abs(s)
+    return modalities[int(np.argmax(totals))]
 
 
-def per_layer_scores(attr, traj_length):
+def per_layer_scores(attr, traj_length, modalities):
     """(n_layer, n_candidates): |atribucion| sumada sobre heads, fila del
     token de consulta (query_idx), restringida a las posiciones candidatas
     0..query_idx -- a diferencia de attattr_per_position (sarfa.py), NO
     agrega entre capas."""
-    query_idx = 3 * (traj_length - 1) + 1
+    query_idx = query_index(modalities, traj_length)
     row = np.abs(attr).sum(axis=1)[:, query_idx, : query_idx + 1]  # (n_layer, n_candidatos)
     return row
 
 
 def run_window(agent, task, episode_path, start_idx, target_dim, m, device, traj_length):
     obs, action, rtg, timestep = load_window(task, episode_path, start_idx, traj_length)
+    modalities = token_modalities(agent.model)
     attr = att_attr(agent, obs, action, rtg, timestep, target_dim, m, device)
-    attattr_score = attattr_per_position(attr, traj_length)
+    attattr_score = attattr_per_position(attr, traj_length, modalities)
     sarfa_score, _, _, _ = sarfa(agent, obs, action, rtg, timestep, target_dim, device)
 
     rho = _spearman(attattr_score, sarfa_score)
-    layer_scores = per_layer_scores(attr, traj_length)
+    layer_scores = per_layer_scores(attr, traj_length, modalities)
     per_layer_rho = [_spearman(layer_scores[l], sarfa_score) for l in range(layer_scores.shape[0])]
 
     return dict(
         rho=rho, per_layer_rho=per_layer_rho,
-        dom_attattr=_dominant_modality(attattr_score),
-        dom_sarfa=_dominant_modality(sarfa_score),
+        dom_attattr=_dominant_modality(attattr_score, modalities),
+        dom_sarfa=_dominant_modality(sarfa_score, modalities),
     )
 
 
@@ -137,8 +139,8 @@ def main():
             results.append(r)
             print(
                 f"{ep_path.name} start={start_idx:4d}: rho={r['rho']:+.3f}  "
-                f"dominante AttAttr={MODALITY_NAMES[r['dom_attattr']]:6s} "
-                f"SARFA={MODALITY_NAMES[r['dom_sarfa']]:6s}"
+                f"dominante AttAttr={r['dom_attattr']:6s} "
+                f"SARFA={r['dom_sarfa']:6s}"
             )
 
     rhos = np.array([r["rho"] for r in results])
@@ -153,10 +155,11 @@ def main():
         print(f"  Spearman capa {l} (sin agregar) vs SARFA: media {col.mean():+.3f} +/- {col.std():.3f}")
     print(f"  acuerdo en modalidad dominante: {agree}/{len(results)} ({100*agree/len(results):.0f}%)")
 
-    dom_sarfa = np.bincount([r["dom_sarfa"] for r in results], minlength=3)
-    dom_attattr = np.bincount([r["dom_attattr"] for r in results], minlength=3)
-    print("  SARFA dominante por modalidad:   " + ", ".join(f"{MODALITY_NAMES[i]}={dom_sarfa[i]}" for i in range(3)))
-    print("  AttAttr dominante por modalidad: " + ", ".join(f"{MODALITY_NAMES[i]}={dom_attattr[i]}" for i in range(3)))
+    modalities = token_modalities(agent.model)
+    for method in ("sarfa", "attattr"):
+        counts = {m: sum(r[f"dom_{method}"] == m for r in results) for m in modalities}
+        label = {"sarfa": "SARFA", "attattr": "AttAttr"}[method]
+        print(f"  {label + ' dominante por modalidad:':<33}" + ", ".join(f"{m}={c}" for m, c in counts.items()))
 
     if args.out:
         out_path = Path(args.out)

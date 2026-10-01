@@ -126,7 +126,10 @@ def main(cfg):
         domain,
         cfg.agent.transformer_cfg.traj_length,
         relabel=False,
-        return_to_go=True,
+        # BC sin rtg (METODOLOGIA_DT_HDT.md seccion 7): sin return-to-go
+        return_to_go=cfg.agent.transformer_cfg.get("use_rtg", True),
+        # rellenar episodios mas cortos que traj_length (seccion 7)
+        pad_short_episodes=cfg.get("pad_short_episodes", False),
     )
     train_iter = iter(train_loader)
 

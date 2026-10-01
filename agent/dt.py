@@ -70,8 +70,14 @@ class DecisionTransformer(nn.Module):
         self.n_embd = config.n_embd
         self.traj_length = config.traj_length
         self.episode_length = config.episode_length
-        # cada timestep aporta 3 tokens: return, state, action
-        self.max_len = config.traj_length * 3
+        # use_rtg=False: behaviour cloning sin token de return (Etapa BC,
+        # METODOLOGIA_DT_HDT.md seccion 7). Cada timestep aporta 3 tokens
+        # (return, state, action) con rtg, o 2 (state, action) sin rtg.
+        self.use_rtg = bool(getattr(config, "use_rtg", True))
+        self.tokens_per_step = 3 if self.use_rtg else 2
+        # posicion del token de estado dentro de cada timestep
+        self.state_token = 1 if self.use_rtg else 0
+        self.max_len = config.traj_length * self.tokens_per_step
 
         # obs_shape: int (o tupla de 1) = obs vectorial (D4RL, Etapa 1);
         # tupla de 3 (H,W,C) = obs de pixeles (CoinRun, Etapa 2). Ver
@@ -100,7 +106,8 @@ class DecisionTransformer(nn.Module):
         self.register_buffer("obs_mean", torch.zeros(obs_dim))
         self.register_buffer("obs_std", torch.ones(obs_dim))
 
-        self.return_embed = nn.Linear(1, self.n_embd)
+        if self.use_rtg:
+            self.return_embed = nn.Linear(1, self.n_embd)
         if self.pixel_obs:
             # PixelEncoder/load_procgen_impala: mismo patron que
             # agent/mdp.py de Benjamin Mancilla (rama upstream/hier-procgen).
@@ -190,7 +197,8 @@ class DecisionTransformer(nn.Module):
 
     def forward(self, returns_to_go, obs, action, timesteps=None):
         """
-        returns_to_go: (B, T, 1)  -- ya escalado (dividido por return_scale)
+        returns_to_go: (B, T, 1)  -- ya escalado (dividido por return_scale).
+                       Ignorado (puede ser None) si use_rtg=False.
         obs:           (B, T, obs_dim) obs vectorial, o (B, T, H, W, C) uint8
                        obs de pixeles (self.pixel_obs)
         action:        (B, T, action_dim) continua, o (B, T, 1) int64 indices
@@ -209,7 +217,6 @@ class DecisionTransformer(nn.Module):
         if not self.pixel_obs:
             obs = (obs - self.obs_mean) / self.obs_std
 
-        r = self.return_embed(returns_to_go) + time_emb
         s = self.state_embed(obs) + time_emb
 
         if self.discrete_actions:
@@ -223,11 +230,16 @@ class DecisionTransformer(nn.Module):
         else:
             a = self.action_embed(action) + time_emb
 
-        # intercalar como (R_1, s_1, a_1, R_2, s_2, a_2, ...)
+        # intercalar como (R_1, s_1, a_1, R_2, s_2, a_2, ...), o
+        # (s_1, a_1, s_2, a_2, ...) sin rtg
+        tokens = [s, a]
+        if self.use_rtg:
+            tokens.insert(0, self.return_embed(returns_to_go) + time_emb)
+        n = self.tokens_per_step
         x = (
-            torch.stack([r, s, a], dim=1)
+            torch.stack(tokens, dim=1)
             .permute(0, 2, 1, 3)
-            .reshape(batch_size, 3 * T, self.n_embd)
+            .reshape(batch_size, n * T, self.n_embd)
         )
 
         # CausalSelfAttention ya hace mask[:, :, :T, :T] internamente,
@@ -235,8 +247,8 @@ class DecisionTransformer(nn.Module):
         for blk in self.blocks:
             x = blk(x, self.attn_mask)
 
-        # el token de estado (índice 1::3) predice la acción tomada en ese paso
-        pred_a = self.action_head(x[:, 1::3])
+        # el token de estado predice la acción tomada en ese paso
+        pred_a = self.action_head(x[:, self.state_token :: n])
         return pred_a
 
 
@@ -298,7 +310,9 @@ class DTAgent:
             self.scheduler = torch.optim.lr_scheduler.LambdaLR(
                 self.opt, lr_lambda=lambda step: 1.0
             )
-        self.return_scale = self.config.return_scale
+        # return_scale no se usa sin rtg (Etapa BC, seccion 7)
+        self.return_scale = getattr(self.config, "return_scale", 1.0)
+        self.use_rtg = self.model.use_rtg
         print(
             "number of parameters: %e", sum(p.numel() for p in self.model.parameters())
         )
@@ -329,22 +343,34 @@ class DTAgent:
         (timestep con shape (1, T), timestep real dentro del episodio).
         rtg acá se pasa SIN escalar (return-to-go crudo); esta función
         se encarga de dividirlo por return_scale antes de pasarlo al modelo,
-        igual que se hace en entrenamiento.
+        igual que se hace en entrenamiento. Sin rtg (use_rtg=False) se
+        ignora y puede ser None.
         """
         obs = torch.as_tensor(obs, device=self.device).unsqueeze(0)
         action = torch.as_tensor(action, device=self.device).unsqueeze(0)
-        rtg = torch.as_tensor(rtg, device=self.device).unsqueeze(0) / self.return_scale
+        if self.use_rtg:
+            rtg = torch.as_tensor(rtg, device=self.device).unsqueeze(0) / self.return_scale
+        else:
+            rtg = None
         timestep = torch.as_tensor(timestep, device=self.device, dtype=torch.long).unsqueeze(0)
         pred_a = self.model(rtg, obs, action, timesteps=timestep)[:, -1]
         if self.model.discrete_actions:
-            # logits (1, num_actions) -> indice de accion escalar. argmax
-            # (greedy), no muestreo -- consistente con --sample=False de
-            # eval_coinrun.py por defecto; ver METODOLOGIA_DT_HDT.md secc. 3.
-            action_idx = pred_a.argmax(dim=-1)
+            # logits (1, num_actions) -> indice de accion escalar. Por
+            # defecto argmax (greedy); con self.sample=True muestrea de
+            # softmax(logits / temperature), como el eval_bct.yaml de
+            # Benjamin (sample=true, temperature=1.0). Ver
+            # METODOLOGIA_DT_HDT.md secciones 3 y 7.
+            if getattr(self, "sample", False):
+                probs = torch.softmax(pred_a / self.temperature, dim=-1)
+                action_idx = torch.multinomial(probs, 1).squeeze(-1)
+            else:
+                action_idx = pred_a.argmax(dim=-1)
             return action_idx.cpu().numpy()
         return pred_a.cpu().numpy()[0]
 
-    def update_actor(self, obs, action, reward, discount, timestep, step, rtg=None):
+    def update_actor(
+        self, obs, action, reward, discount, timestep, step, rtg=None, mask=None
+    ):
         """
         rtg: (B, T, 1) return-to-go CRUDO del episodio completo, sin
         descontar (lo entrega OfflineReplayBuffer con return_to_go=True).
@@ -352,13 +378,19 @@ class DTAgent:
         ve los K pasos del batch y descuenta con `discount`: NO es el
         return-to-go del metodo (ver METODOLOGIA_DT_HDT.md, seccion 2.10);
         queda solo para llamadores sin informacion del episodio (tests con
-        tensores dummy).
+        tensores dummy). Sin rtg (use_rtg=False) no se usa.
+
+        mask: (B, T, 1) 1 en pasos reales, 0 en relleno de episodios cortos
+        (pad_short_episodes, seccion 7). None = todos los pasos son reales.
         """
         metrics = dict()
 
-        if rtg is None:
-            rtg = self.compute_returns_to_go(reward, discount)
-        rtg = rtg / self.return_scale
+        if not self.use_rtg:
+            rtg = None
+        else:
+            if rtg is None:
+                rtg = self.compute_returns_to_go(reward, discount)
+            rtg = rtg / self.return_scale
         pred_a = self.model(rtg, obs, action, timesteps=timestep)
 
         if self.model.discrete_actions:
@@ -369,13 +401,20 @@ class DTAgent:
             a_tgt = action.long()
             if a_tgt.dim() == 3 and a_tgt.size(-1) == 1:
                 a_tgt = a_tgt.squeeze(-1)
-            loss = F.cross_entropy(
+            per_step = F.cross_entropy(
                 pred_a.reshape(B * T, A),
                 a_tgt.reshape(B * T),
                 label_smoothing=self.model.label_smoothing,
-            )
+                reduction="none",
+            ).reshape(B, T)
         else:
-            loss = ((pred_a - action) ** 2).mean()
+            per_step = ((pred_a - action) ** 2).mean(dim=-1)
+
+        if mask is None:
+            loss = per_step.mean()
+        else:
+            m = mask.reshape(per_step.shape)
+            loss = (per_step * m).sum() / m.sum().clamp(min=1.0)
 
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -390,15 +429,21 @@ class DTAgent:
     def update(self, replay_iter, step):
         metrics = dict()
 
-        batch = next(replay_iter)
-        if len(batch) != 7:
-            raise ValueError(
-                "DT/HDT necesitan el return-to-go del episodio completo: crear "
-                "el loader con make_replay_loader(..., return_to_go=True)"
-            )
-        obs, action, reward, discount, next_obs, timestep, rtg = utils.to_torch(
-            batch, self.device
-        )
+        # batch: (obs, action, reward, discount, next_obs, timestep[, rtg][, mask])
+        # rtg solo si el loader se creo con return_to_go=True (DT/HDT con
+        # use_rtg), mask solo con pad_short_episodes=True (seccion 7).
+        batch = utils.to_torch(next(replay_iter), self.device)
+        obs, action, reward, discount, next_obs, timestep = batch[:6]
+        extra = list(batch[6:])
+        rtg = None
+        if self.use_rtg:
+            if not extra:
+                raise ValueError(
+                    "DT/HDT necesitan el return-to-go del episodio completo: crear "
+                    "el loader con make_replay_loader(..., return_to_go=True)"
+                )
+            rtg = extra.pop(0)
+        mask = extra.pop(0) if extra else None
         # timestep viene como float desde utils.to_torch; nn.Embedding necesita long
         timestep = timestep.squeeze(-1).long()
 
@@ -406,6 +451,8 @@ class DTAgent:
             metrics["batch_reward"] = reward.mean().item()
 
         metrics.update(
-            self.update_actor(obs, action, reward, discount, timestep, step, rtg=rtg)
+            self.update_actor(
+                obs, action, reward, discount, timestep, step, rtg=rtg, mask=mask
+            )
         )
         return metrics

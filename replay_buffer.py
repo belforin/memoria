@@ -61,6 +61,7 @@ class OfflineReplayBuffer(IterableDataset):
         relabel,
         obs,
         return_to_go=False,
+        pad_short_episodes=False,
     ):
         self._env = env
         self._replay_dir = replay_dir
@@ -79,6 +80,11 @@ class OfflineReplayBuffer(IterableDataset):
         self._obs = obs
         # DT/HDT: devolver tambien el return-to-go del EPISODIO completo (ver _sample)
         self._return_to_go = return_to_go
+        # Etapa BC (METODOLOGIA_DT_HDT.md seccion 7): episodios mas cortos que
+        # traj_length se rellenan con ceros al final y _sample agrega una
+        # mascara (T, 1) de pasos reales como ultimo elemento, igual que
+        # upstream/hier-procgen:replay_buffer.py de Benjamin Mancilla.
+        self._pad_short_episodes = pad_short_episodes
         # print('seed', np.random.get_state()[1][0])
         # random.seed(np.random.get_state()[1][0])
 
@@ -128,17 +134,47 @@ class OfflineReplayBuffer(IterableDataset):
     #new sample, with timestep
     def _sample(self):
         episode = self._sample_episode()
-        idx = np.random.randint(0, episode_len(episode) - self._traj_length + 1) + 1
+        L = episode_len(episode)
+        if self._pad_short_episodes and L < self._traj_length:
+            return self._sample_padded(episode, L)
+        idx = np.random.randint(0, L - self._traj_length + 1) + 1
         obs = episode["observation"][idx - 1 : idx - 1 + self._traj_length]
         action = episode["action"][idx : idx + self._traj_length]
         next_obs = episode["observation"][idx : idx + self._traj_length]
         reward = episode["reward"][idx : idx + self._traj_length]
         discount = episode["discount"][idx : idx + self._traj_length] * self._discount
         timestep = np.arange(idx - 1, idx + self._traj_length - 1)[:, np.newaxis]
+        out = (obs, action, reward, discount, next_obs, timestep)
         if self._return_to_go:
-            rtg = episode["rtg"][idx : idx + self._traj_length]
-            return (obs, action, reward, discount, next_obs, timestep, rtg)
-        return (obs, action, reward, discount, next_obs, timestep)
+            out += (episode["rtg"][idx : idx + self._traj_length],)
+        if self._pad_short_episodes:
+            out += (np.ones((self._traj_length, 1), dtype=np.float32),)
+        return out
+
+    def _sample_padded(self, episode, L):
+        """
+        Episodio completo (L < traj_length) desde idx=1, con ceros al final
+        hasta traj_length. Los timesteps siguen contando despues del final
+        (son posiciones de relleno, nunca se usan en la loss). Con atencion
+        causal el relleno al final no cambia la salida en los pasos reales.
+        """
+        pad = self._traj_length - L
+
+        def padded(x):
+            return np.concatenate([x, np.zeros((pad,) + x.shape[1:], dtype=x.dtype)], axis=0)
+
+        obs = padded(episode["observation"][0:L])
+        action = padded(episode["action"][1 : L + 1])
+        next_obs = padded(episode["observation"][1 : L + 1])
+        reward = padded(episode["reward"][1 : L + 1])
+        discount = padded(episode["discount"][1 : L + 1] * self._discount)
+        timestep = np.arange(0, self._traj_length)[:, np.newaxis]
+        out = (obs, action, reward, discount, next_obs, timestep)
+        if self._return_to_go:
+            out += (padded(episode["rtg"][1 : L + 1]),)
+        mask = np.zeros((self._traj_length, 1), dtype=np.float32)
+        mask[:L] = 1.0
+        return out + (mask,)
     def _sample_goal(self):
         episode = self._sample_episode()
         # add +1 for the first dummy transition
@@ -220,6 +256,7 @@ def make_replay_loader(
     relabel=True,
     obs="states",
     return_to_go=False,
+    pad_short_episodes=False,
 ):
     max_size_per_worker = max_size // max(1, num_workers)
 
@@ -236,6 +273,7 @@ def make_replay_loader(
         relabel,
         obs,
         return_to_go,
+        pad_short_episodes,
     )
 
     loader = torch.utils.data.DataLoader(

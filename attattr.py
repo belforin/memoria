@@ -80,6 +80,22 @@ def _patched_attn_forward(self, x, mask, alpha=1.0, capture=None):
     return y
 
 
+def token_modalities(model):
+    """Modalidad de cada token dentro de un timestep, en orden: (return,
+    state, action) para DT/HDT, (state, action) para BC sin rtg
+    (use_rtg=False, METODOLOGIA_DT_HDT.md seccion 7). La posicion
+    `idx` de la secuencia intercalada es el timestep idx // n y la
+    modalidad modalities[idx % n], con n = len(modalities)."""
+    if getattr(model, "use_rtg", True):
+        return ("return", "state", "action")
+    return ("state", "action")
+
+
+def query_index(modalities, traj_length):
+    """Posicion del ultimo token de estado, el que predice la accion final."""
+    return len(modalities) * (traj_length - 1) + modalities.index("state")
+
+
 def load_agent(snapshot, agent_kind, task, device):
     payload = torch.load(snapshot, map_location=device)
     if task == COINRUN_TASK:
@@ -198,20 +214,20 @@ def att_attr(agent, obs, action, rtg, timestep, target_dim, m, device):
     return np.stack(attrs, axis=0)  # (n_layer, n_head, 3T, 3T)
 
 
-def summarize(attr, traj_length, top_k=5):
+def summarize(attr, traj_length, top_k=5, modalities=("return", "state", "action")):
     """Imprime, por capa, los (timestep, modalidad) pasados con mayor
     atribucion hacia la posicion de query que produce la prediccion final
-    (ultimo token de estado, indice 3*(T-1)+1). Suma sobre heads."""
-    modality = {0: "return", 1: "state", 2: "action"}
-    query_idx = 3 * (traj_length - 1) + 1
+    (ultimo token de estado, ver query_index). Suma sobre heads."""
+    n = len(modalities)
+    query_idx = query_index(modalities, traj_length)
     n_layer = attr.shape[0]
     for l in range(n_layer):
         row = np.abs(attr[l]).sum(axis=0)[query_idx]  # (3T,) sumado sobre heads
         order = np.argsort(-row)[:top_k]
         print(f"  capa {l}: top-{top_k} posiciones clave por |atribucion|")
         for key_idx in order:
-            t = key_idx // 3
-            mod = modality[key_idx % 3]
+            t = key_idx // n
+            mod = modalities[key_idx % n]
             print(f"    t={t:2d} ({mod:6s})  |attr|={row[key_idx]:.6f}")
 
 
@@ -250,7 +266,7 @@ def main():
         f"ventana=[{start_idx - 1}, {start_idx - 1 + traj_length}) de {episode_path.name}): "
         f"atribucion shape {attr.shape} (n_layer, n_head, 3T, 3T)"
     )
-    summarize(attr, traj_length)
+    summarize(attr, traj_length, modalities=token_modalities(agent.model))
 
     if args.out:
         out_path = Path(args.out)

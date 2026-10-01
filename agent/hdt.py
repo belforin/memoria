@@ -57,7 +57,12 @@ class HierarchicalDecisionTransformer(nn.Module):
         self.n_embd = config.n_embd
         self.traj_length = config.traj_length
         self.episode_length = config.episode_length
-        self.max_len = config.traj_length * 3
+        # use_rtg=False: BC sin token de return, ver agent/dt.py y
+        # METODOLOGIA_DT_HDT.md seccion 7.
+        self.use_rtg = bool(getattr(config, "use_rtg", True))
+        self.tokens_per_step = 3 if self.use_rtg else 2
+        self.state_token = 1 if self.use_rtg else 0
+        self.max_len = config.traj_length * self.tokens_per_step
 
         # obs_shape: int (o tupla de 1) = obs vectorial (D4RL, Etapa 1);
         # tupla de 3 (H,W,C) = obs de pixeles (CoinRun, Etapa 2). Ver
@@ -83,7 +88,8 @@ class HierarchicalDecisionTransformer(nn.Module):
         self.obs_encoder = ObservationSequenceEncoding(obs_shape, obs_config)
         self.action_encoder = ActionSequenceEncoding(action_dim, action_config)
 
-        self.return_embed = nn.Linear(1, self.n_embd)
+        if self.use_rtg:
+            self.return_embed = nn.Linear(1, self.n_embd)
 
         self.blocks = nn.ModuleList([Block(top_config) for _ in range(top_config.n_layer)])
 
@@ -107,8 +113,9 @@ class HierarchicalDecisionTransformer(nn.Module):
     def initialize_weights(self):
         # T_obs/T_act ya traen su propio pos_embed interno (aplicado sobre
         # su salida contextualizada). El token de return no pasa por
-        # ningún encoder, así que necesita uno propio acá.
-        self.return_pos_embed = nn.Embedding(self.episode_length, self.n_embd)
+        # ningún encoder, así que necesita uno propio acá (solo con rtg).
+        if self.use_rtg:
+            self.return_pos_embed = nn.Embedding(self.episode_length, self.n_embd)
         self.register_buffer(
             "attn_mask",
             torch.tril(torch.ones(self.max_len, self.max_len))[None, None, ...],
@@ -141,7 +148,8 @@ class HierarchicalDecisionTransformer(nn.Module):
 
     def forward(self, returns_to_go, obs, action, timesteps=None):
         """
-        returns_to_go: (B, T, 1)  -- ya escalado (dividido por return_scale)
+        returns_to_go: (B, T, 1)  -- ya escalado (dividido por return_scale).
+                       Ignorado (puede ser None) si use_rtg=False.
         obs:           (B, T, obs_dim) obs vectorial, o (B, T, H, W, C) uint8
                        obs de pixeles (self.pixel_obs)
         action:        (B, T, action_dim) continua, o (B, T, 1) int64 indices
@@ -165,18 +173,22 @@ class HierarchicalDecisionTransformer(nn.Module):
         # y con posición propia, no hace falta sumarle time_emb de nuevo.
         s = self.obs_encoder(obs, timesteps=timesteps)
         a = self.action_encoder(action, timesteps=timesteps)
-        r = self.return_embed(returns_to_go) + self.return_pos_embed(timesteps)
+        tokens = [s, a]
+        if self.use_rtg:
+            r = self.return_embed(returns_to_go) + self.return_pos_embed(timesteps)
+            tokens.insert(0, r)
+        n = self.tokens_per_step
 
         x = (
-            torch.stack([r, s, a], dim=1)
+            torch.stack(tokens, dim=1)
             .permute(0, 2, 1, 3)
-            .reshape(batch_size, 3 * T, self.n_embd)
+            .reshape(batch_size, n * T, self.n_embd)
         )
 
         for blk in self.blocks:
             x = blk(x, self.attn_mask)
 
-        pred_a = self.action_head(x[:, 1::3])
+        pred_a = self.action_head(x[:, self.state_token :: n])
         return pred_a
 
 
@@ -239,7 +251,8 @@ class HDTAgent(DTAgent):
             self.scheduler = torch.optim.lr_scheduler.LambdaLR(
                 self.opt, lr_lambda=lambda step: 1.0
             )
-        self.return_scale = self.config.return_scale
+        self.return_scale = getattr(self.config, "return_scale", 1.0)
+        self.use_rtg = self.model.use_rtg
         print(
             "number of parameters: %e", sum(p.numel() for p in self.model.parameters())
         )

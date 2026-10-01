@@ -2140,6 +2140,157 @@ PyTorch + Hydra + Weights & Biases, cluster Slurm (`ialab-low`,
 convertidos viven en `data/<dataset>/<domain>/episode_*.npz`
 (`.gitignore`d, no se suben al repo).
 
+## 7. Etapa BC — behaviour cloning autoregresivo sin return-to-go (desde 2026-10-01)
+
+### 7.0 Origen: reunión del 2026-10-01
+
+Tareas acordadas en la reunión (minuta textual, traducida):
+
+1. Volver a correr **todos los experimentos sin rewards**, para tener un
+   setup de behaviour cloning (BC).
+2. En CoinRun, **igualar la complejidad en parámetros de la arquitectura
+   de Benjamín**.
+3. Correr **más semillas en CoinRun** para validar la varianza de la
+   evaluación.
+4. Pasar a **interpretabilidad** una vez corregido el setup de BC.
+
+Qué cambia respecto de DT/HDT: se elimina el token de return-to-go. Cada
+paso aporta 2 tokens `(s_t, a_t)` en vez de 3 `(R_t, s_t, a_t)`, y la
+acción se predice desde el token de estado con máscara causal. Siguen
+existiendo las dos topologías:
+
+| Topología | Modelo | Equivalente en Benjamín |
+|---|---|---|
+| unistream | `DecisionTransformer` con `use_rtg: false` (BC-uni) | MaskDP unistream |
+| jerárquica | `HierarchicalDecisionTransformer` con `use_rtg: false` (BC-hier) | MaskDP jerárquico (`reduce_enc`) |
+
+Decisiones confirmadas con el usuario (2026-10-01): ambas topologías;
+igualar hiperparámetros **y** nº de parámetros de Benjamín.
+
+**Pendiente (el usuario lo está consultando):** si "todos los experimentos"
+son D4RL + CoinRun (lo que dice la minuta) o si también entran las tareas
+DMC propioceptivas de Benjamín (`/home/bmancilla/archive/MaskDP/maskdp_data/maskdp_train/`).
+La parte de código y CoinRun no depende de esa respuesta y avanza mientras
+tanto.
+
+### 7.1 Referencias de Benjamín a igualar (verificadas en su código)
+
+- Config CoinRun (`upstream/hier-procgen:agent/mdp_procgen.yaml`):
+  `n_embd=256`, `n_head=4`, `traj_length=64`, `batch_size=128`, `lr=1e-4`,
+  dropout 0, weight decay 0, PE sinusoidal fija, `num_grad_steps=400010`,
+  encoder IMPALA congelado.
+- Nº de parámetros entrenables en CoinRun, sin el IMPALA
+  (`/home/bmancilla/archive/MaskDP/Hier_procgen/arquitectura_transformer_seccion3.1.md`):
+  unistream **4.155.663**, jerárquica `reduce_enc` **4.191.375**.
+- Evaluación CoinRun (`upstream/hier-procgen:eval_bct.yaml`): 100 episodios
+  por split, train niveles 0-199, val 200-249, test 250+, muestreo con
+  temperatura 1.0 (`sample: true`). Nosotros usábamos argmax.
+- DMC propioceptivo (solo si entra): `upstream/hierarchical:agent/mdp.yaml`
+  (`batch_size=384`, `traj_length=64`, `n_embd=256`, 4 heads), evaluación
+  con `Hierarchical/eval_return.py` (retorno normalizado, 10 episodios).
+
+### 7.2 Plan y estimación
+
+1. Código: opción `use_rtg` en `transformer_cfg` de `agent/dt.py` y
+   `agent/hdt.py` (default `true`, lo anterior no cambia). Se guarda en el
+   `cfg` del snapshot, así que eval e interpretabilidad lo recuperan solos.
+2. CoinRun: configs `bc_uni_coinrun`/`bc_hier_coinrun` con los hparams de
+   §7.1 y paridad de params contra 4,16M/4,19M.
+3. a) D4RL sin R con la misma config que §2.12 (solo se quita R);
+   b) DMC de Benjamín, condicional.
+4. Smoke tests para medir tiempos reales.
+5. Entrenamiento: D4RL {uni, hier} × 3 tareas × 3 semillas = 18 jobs;
+   CoinRun {uni, hier} × 5 semillas = 10 jobs.
+6. Varianza de evaluación en CoinRun: 5 semillas de entrenamiento × varios
+   `rand_seed` de evaluación.
+7. Interpretabilidad (AttAttr/SARFA, ablación por grupos) con solo
+   state/action.
+
+Estimación: ~4-5 días de implementación (+2 si entra DMC), cómputo de
+~1 día para D4RL y ~3-6 días de reloj para CoinRun (cada corrida con la
+config de Benjamín puede tardar 1-3 días; se confirma con el smoke test),
+~3-4 días de eval + interpretabilidad. Total ~2-3 semanas (~3-4 con DMC).
+
+### 7.3 Implementación (2026-10-01)
+
+**Modelo.** `use_rtg` en `transformer_cfg` de `agent/dt.py` y `agent/hdt.py`
+(default `true`, los snapshots anteriores cargan igual). Con `false`:
+
+- no se crean `return_embed` (ni `return_pos_embed` en HDT);
+- la secuencia es `(s_1, a_1, s_2, a_2, ...)`, `max_len = 2T`;
+- la acción `a_t` se predice desde el token `s_t` (posición `0::2`), con la
+  máscara causal de siempre: ve `s_1..s_t` y `a_1..a_{t-1}`;
+- `act()`/`update()` ignoran el rtg; como `use_rtg` queda en el `cfg` del
+  snapshot, los scripts de evaluación lo recuperan sin flags nuevos.
+
+**Episodios cortos.** En CoinRun la mediana del largo de episodio es 52 y
+Benjamín usa contexto 64. Filtrar episodios `< 64` dejaría el 42% de los
+episodios (72% de las transiciones), sesgado hacia los largos. Se hace lo
+mismo que su `replay_buffer.py` (`upstream/hier-procgen`): opción
+`pad_short_episodes` en `replay_buffer.py` (top-level en
+`pretrain_*.yaml`, default `false`) que rellena con ceros al final hasta
+`traj_length` y agrega una máscara `(T, 1)` al batch; `DTAgent.update_actor`
+promedia la loss solo sobre los pasos reales. Con atención causal el
+relleno al final no cambia la salida en los pasos reales, así que no hace
+falta máscara de atención. Nota: `data/coinrun/` se convirtió con
+`--min_length 20` (§3), así que siguen fuera 118 episodios de 3-19 pasos
+(0,8%); Benjamín no los filtra. Diferencia menor, se deja así.
+
+**Optimizador.** Benjamín usa AdamW con `weight_decay=0`, betas por
+defecto y sin warmup, que es Adam simple → `use_adamw: false`.
+
+**Evaluación.** `eval_coinrun.py --sample --temperature 1.0` muestrea la
+acción de `softmax(logits/T)` como su `eval_bct.yaml` (antes solo argmax;
+argmax sigue siendo el default). `torch` se siembra por split, así que el
+muestreo también es reproducible. `eval_coinrun_seeds.py` ahora acepta
+`--agents`, `--seeds`, `--snapshot-pattern` y `--eval-seeds` (varios
+`rand_seed` de evaluación, reporta la std entre semillas de entrenamiento y
+la std entre `rand_seed`), para la tarea 3 de la reunión. Los defaults
+reproducen la evaluación rtgfix anterior.
+
+**Paridad de parámetros en CoinRun** (entrenables, sin el IMPALA congelado,
+mismo criterio que la tabla de Benjamín):
+
+| Config | Arquitectura | Params | Referencia Benjamín | Desviación |
+|---|---|---|---|---|
+| `agent/bc_uni_coinrun.yaml` | DT sin R, `n_embd=256`, 4 heads, 5 bloques | 4.213.007 | unistream 4.155.663 (3 enc + 2 dec a 256) | +1,4% |
+| `agent/bc_hier_coinrun.yaml` | HDT sin R, `n_embd=256`, 4 heads, obs 2 + act 2 + conjunto 1 | 4.469.007 | `reduce_enc` 4.191.375 (2 enc por stream + 1 fusión) | +6,6% |
+
+Por qué BC-hier queda en +6,6% y no más cerca: con `n_embd ≠ 256` el
+checkpoint del IMPALA no calza (`feature_dim=256`) y `load_procgen_impala`
+deja la proyección **aleatoria y congelada** (`ignore_proj=True`). Es la
+misma discrepancia que Benjamín anotó para sus variantes jerárquicas
+(`Hier_procgen/arquitectura_transformer_seccion3.1.md` §2). Las
+combinaciones más cercanas en params la tienen (p. ej. `n_embd=224`, 2+2+2:
+4.085.327, -2,5%; `n_embd=208`, 2+2+3: 4.075.775, -2,8%). Se prefiere
+mantener el encoder preentrenado completo y la estructura análoga a la
+suya. Parte de los params son los embeddings de timestep aprendidos
+(`episode_length × n_embd` = 256.000 por stream: 1 en BC-uni, 2 en
+BC-hier), que Benjamín no tiene (PE sinusoidal fija).
+
+**Tests.** `test_bc.py` (tensores dummy; DT/HDT, acción continua y discreta):
+shapes, ausencia de parámetros de return, rtg ignorado, causalidad (a_t no
+influye en su propia predicción, s_t sí), loss enmascarada (cambiar targets
+del relleno no cambia la loss), `update` con batch de 6/7 elementos,
+`act()` sin rtg, muestreo con temperatura. `test_replay_padding.py` (datos
+reales de `data/coinrun`, corrido con `srun`): episodios de 20 y 38 pasos
+rellenados y enmascarados correctamente, uno de 70 sin relleno. Los tests
+anteriores (`test_dt.py`, `test_hdt.py`, `test_sequence_encoding.py`,
+`test_dt_coinrun.py`) siguen pasando.
+
+**Interpretabilidad.** `attattr.py`, `sarfa.py`, `interp_crossval.py` e
+`interp_group_ablation.py` asumían 3 tokens por paso (`idx % 3`, query en
+`3(T-1)+1`, modalidad "return"). Ahora leen la disposición del modelo con
+`attattr.token_modalities(model)` (`(return, state, action)` o
+`(state, action)`) y `attattr.query_index`. Las modalidades se identifican
+por nombre, también en el `.npz` de `interp_crossval.py` (`dom_attattr`/
+`dom_sarfa` pasan de índice a nombre; ningún script lee esos archivos).
+Verificado con `srun`: re-correr `interp_crossval.py` sobre DT halfcheetah
+rtgfix s1 da el bloque agregado **idéntico** al log guardado
+(`eval_results/interp_crossval_dt_halfcheetah_rtgfix.log`), y los 4 scripts
+corren sobre snapshots BC (DT y HDT sin entrenar) reportando solo
+state/action.
+
 ## Resumen de próximos pasos concretos
 
 1. [x] Igualar parámetros DT vs HDT (Etapa 0) y documentar la tabla de config.
@@ -2318,3 +2469,14 @@ convertidos viven en `data/<dataset>/<domain>/episode_*.npz`
    (p. ej. 0-4) o más episodios por split, para separar el ruido por
    muestreo de niveles (≈5 pp de tasa de éxito con 100 episodios) de la
    diferencia DT vs. HDT en val (§2.10).
+23. [x] **Etapa BC sin R (§7).** Opción `use_rtg: false` en DT/HDT, relleno
+   de episodios cortos, muestreo con temperatura en la eval, con tests (§7.3).
+24. [ ] CoinRun BC-uni/BC-hier con hparams y nº de params de Benjamín
+   (~4,16M/~4,19M sin IMPALA), 5 semillas por topología (§7.1).
+25. [ ] **Decisión del usuario:** el re-entrenamiento sin R es en D4RL, en el
+   DMC de Benjamín o en ambos (§7.0).
+26. [ ] Re-entrenar y evaluar sin R en el benchmark propioceptivo elegido.
+27. [ ] Varianza de evaluación en CoinRun: semillas de entrenamiento ×
+   `rand_seed` de evaluación (reemplaza el punto 22).
+28. [ ] Interpretabilidad sobre los modelos BC (reemplaza los puntos 17-19
+   para la etapa nueva).

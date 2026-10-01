@@ -86,6 +86,19 @@ SPLITS = {
 }
 
 
+def add_sampling_args(parser):
+    parser.add_argument("--sample", action="store_true",
+                         help="Muestrear la accion de softmax(logits/temperature) en vez "
+                              "de argmax, como eval_bct.yaml de Benjamin (sample=true). "
+                              "Con --sample, torch se siembra con --seed por split.")
+    parser.add_argument("--temperature", type=float, default=1.0)
+
+
+def set_sampling(agent, args):
+    agent.sample = args.sample
+    agent.temperature = args.temperature
+
+
 def normalize_return(raw_return, env_name, distribution_mode):
     r_min, r_max = PROCGEN[env_name][distribution_mode]
     return (raw_return - r_min) / (r_max - r_min)
@@ -158,6 +171,9 @@ def eval_split(agent, traj_length, episode_length, target_return, max_steps,
     env = VecExtractDictObs(env, "rgb")
 
     agent.train(False)
+    # con agent.sample=True la accion se muestrea con torch: sembrar por
+    # split para que la evaluacion sea reproducible igual que los niveles
+    torch.manual_seed(seed)
     returns = []
     for ep in range(num_episodes):
         frames = [] if ep < video_episodes else None
@@ -209,6 +225,7 @@ def main():
     parser.add_argument("--video-episodes", type=int, default=3,
                          help="Episodios por split a grabar (solo con --video-dir)")
     parser.add_argument("--video-fps", type=int, default=15)
+    add_sampling_args(parser)
     args = parser.parse_args()
 
     payload = torch.load(args.snapshot, map_location=args.device)
@@ -230,6 +247,7 @@ def main():
     )
     agent.model.load_state_dict(payload["model"], strict=False)
     agent.train(False)
+    set_sampling(agent, args)
 
     for split_name in args.splits:
         split = SPLITS[split_name]
@@ -248,7 +266,8 @@ def main():
         )
         norm_scores = normalize_return(returns, args.env_name, args.distribution_mode)
         print(
-            f"[{split_name}] ({args.agent}, target_return={args.target_return}): "
+            f"[{split_name}] ({args.agent}, target_return={args.target_return}, "
+            f"{'sample T=%g' % args.temperature if args.sample else 'argmax'}): "
             f"retorno {returns.mean():.2f} +/- {returns.std():.2f} | "
             f"score normalizado {norm_scores.mean():.3f} +/- {norm_scores.std():.3f} "
             f"({args.num_episodes} episodios)"
