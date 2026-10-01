@@ -2678,7 +2678,8 @@ lectura, el mismo para las 24 corridas):
 
 | Grupo | GPU | Jobs |
 |---|---|---|
-| DMC BC-uni cheetah s1-s3, walker s1-s2 | A40 (`ialab-high`) | 30636, 30637, 30639, 30640, 30641 |
+| DMC BC-uni cheetah s1-s2, walker s1-s2 | A40 (`ialab-high`) | 30636, 30637, 30640, 30641 |
+| DMC BC-uni cheetah s3 | A40 (`ialab-high-unlimit`, QOS `long`, 24 h) | 30680 |
 | DMC BC-uni walker s3, quadruped s1-s3 | Titan RTX (`ialab-low`) | 30655-30658 |
 | DMC BC-hier, 3 tareas × 3 semillas | Titan RTX | 30659-30667 |
 | CoinRun BC-uni / BC-hier, 3 semillas | Titan RTX | 30668-30673 |
@@ -2686,6 +2687,13 @@ lectura, el mismo para las 24 corridas):
 Las semillas de DMC BC-uni quedan repartidas entre A40 y Titan RTX; la
 diferencia es de redondeo (§7.4). CoinRun va entero en Titan RTX (sin TF32
 en la convolución del IMPALA, a diferencia de la A40).
+
+**Límite de cupos:** la QOS `regular` permite **4 jobs corriendo a la vez por
+usuario** (sumando particiones), así que las 24 corridas (~330 h de GPU) van
+de a 4: ~3,5 días de reloj. Se agrega un 5.º cupo con la QOS `long` (1 job,
+solo en las particiones `-unlimit`, mismos nodos), con `--time=24:00:00` para
+respetar la regla de 24 h por job: cheetah s3 BC-uni se movió ahí (job 30639
+→ 30680). Estimación con 5 cupos: ~2,8 días.
 
 **Entorno:** la copia propia `maskdp-ben` (job 30612) sigue copiando (~82% a
 los 76 min); queda como respaldo si el entorno de Benjamín cambiara durante
