@@ -2563,6 +2563,45 @@ de evaluación K = 64 (contexto completo, como su evaluación BCT y su
 regla de "ventana completa en evaluación"; su script de retorno DMC usaba
 `T_cond=12` para su modelo enmascarado).
 
+### 7.7 Rama `bc-plugandplay`: configs, tests, datos y entorno (2026-10-01)
+
+- **Configs** (en la rama): `agent/bc_{uni,hier}.yaml` (DMC) y
+  `agent/bc_{uni,hier}_procgen.yaml` (CoinRun) con los valores de §7.6;
+  `agent/bc_eval.yaml` para sus `eval_return.py` y `eval_bct.py`. IMPALA con
+  convoluciones del checkpoint y proyección aleatoria congelada
+  (`impala_projection: random`). Dropout en CoinRun: attn/resid/mlp 0,1 y
+  embeddings 0, como su `mdp_procgen.yaml` (la tesis dice "attn/embd/resid";
+  se sigue el código).
+- **Paridad en CoinRun** (contexto 16, entrenables sin IMPALA): BC-uni
+  3.961.103 (−4,7% vs. 4.155.663), BC-hier 3.965.199 (−5,4% vs.
+  4.191.375). Algo mayor que en DMC porque nuestro modelo no tiene cabeza de
+  reconstrucción de estado; un sexto bloque daría ~+15%, así que se mantienen
+  5.
+- **Tests** (`test_bc_ar.py`, CPU): causalidad (uni/hier, continua/discreta),
+  historial incompleto en evaluación, loss enmascarada, `update` con su
+  formato de batch, agente de evaluación (ventana K y acción = modelo sobre
+  la ventana), IMPALA (conv = checkpoint, proyección distinta, todo
+  congelado), paridad DMC. Todo OK.
+- **Datos CoinRun:** su dataset convertido
+  (`/home/bmancilla/scratch/procgen_data/coinrun_npz`) ya no existe (solo
+  queda un archivo de caché). Se regenera con **su** conversor
+  (`archive/MaskDP/MaskDP_public/convert_coinrun_to_npz.py`, copiado tal cual
+  a la rama) a partir de nuestra descarga del dataset original
+  (`raw_data/coinrun/coinrun`, 14.466 episodios, expert 1M nivel 200 de
+  Mediratta et al.). **Supuesto:** `--min_length 1` (no descartar ninguno),
+  porque la tesis dice que el relleno permite entrenar con los episodios
+  cortos "sin descartarlas"; no se encontró el valor que usó para el
+  conjunto de entrenamiento (su lanzador de conversión visible usa 8 para
+  validación).
+- **Entorno:** su `maskdp_procgen` tiene todo lo necesario (DMC, Procgen,
+  torch 1.13 cu113, Hydra); `procgen-env` (nuestro) no sirve (torch CPU, sin
+  Hydra). Una primera copia con `srun` se cortó a los 40 min (job 30607,
+  sistema de archivos lento); se relanzó como sbatch de 8 h (job 30612,
+  `maskdp-ben`). Mientras tanto, el smoke test (job 30613) usa su entorno
+  directamente, en solo lectura.
+- **Semillas (decisión del usuario):** 3 en DMC y 3 en CoinRun, igual que
+  Benjamín → 18 + 6 = 24 corridas.
+
 ## Resumen de próximos pasos concretos
 
 1. [x] Igualar parámetros DT vs HDT (Etapa 0) y documentar la tabla de config.
