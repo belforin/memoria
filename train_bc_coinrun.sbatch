@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=maskdp_train_bc_coinrun
 #SBATCH --partition=ialab-high
-#SBATCH --qos=long
+#SBATCH --qos=regular
 #SBATCH --account=default-account
 #SBATCH --gres=gpu:a40:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=3-00:00:00
+#SBATCH --time=20:00:00
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
 #SBATCH --comment="Entrenamiento de behaviour cloning sin return-to-go en CoinRun (uni/jerarquico) comparable con MaskDP de Benjamin"

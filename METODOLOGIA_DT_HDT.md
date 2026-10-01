@@ -2191,25 +2191,37 @@ tanto.
 
 ### 7.2 Plan y estimación
 
-1. Código: opción `use_rtg` en `transformer_cfg` de `agent/dt.py` y
-   `agent/hdt.py` (default `true`, lo anterior no cambia). Se guarda en el
-   `cfg` del snapshot, así que eval e interpretabilidad lo recuperan solos.
-2. CoinRun: configs `bc_uni_coinrun`/`bc_hier_coinrun` con los hparams de
-   §7.1 y paridad de params contra 4,16M/4,19M.
-3. a) D4RL sin R con la misma config que §2.12 (solo se quita R);
-   b) DMC de Benjamín, condicional.
-4. Smoke tests para medir tiempos reales.
-5. Entrenamiento: D4RL {uni, hier} × 3 tareas × 3 semillas = 18 jobs;
-   CoinRun {uni, hier} × 5 semillas = 10 jobs.
-6. Varianza de evaluación en CoinRun: 5 semillas de entrenamiento × varios
-   `rand_seed` de evaluación.
-7. Interpretabilidad (AttAttr/SARFA, ablación por grupos) con solo
-   state/action.
+Estado al 2026-10-01 entre corchetes.
 
-Estimación: ~4-5 días de implementación (+2 si entra DMC), cómputo de
-~1 día para D4RL y ~3-6 días de reloj para CoinRun (cada corrida con la
-config de Benjamín puede tardar 1-3 días; se confirma con el smoke test),
-~3-4 días de eval + interpretabilidad. Total ~2-3 semanas (~3-4 con DMC).
+1. [hecho, §7.3] Código: opción `use_rtg` en `transformer_cfg` de
+   `agent/dt.py` y `agent/hdt.py` (default `true`, lo anterior no cambia).
+   Se guarda en el `cfg` del snapshot, así que eval e interpretabilidad lo
+   recuperan solos. Incluye relleno de episodios cortos y muestreo con
+   temperatura en la evaluación.
+2. [hecho, §7.3] CoinRun: configs `bc_uni_coinrun`/`bc_hier_coinrun` con los
+   hparams de §7.1 y paridad de params (+1,4% / +6,6%).
+3. a) D4RL sin R con la misma config que §2.12 (solo se quita R);
+   b) DMC de Benjamín, condicional. [esperando la decisión del usuario, §7.0]
+4. [hecho, §7.4] Smoke tests para medir tiempos reales: ~32-36 h por
+   corrida en 1080 Ti con píxeles.
+4b. [hecho, §7.4] Precalcular los embeddings del IMPALA, verificar que
+   entrenar sobre ellos equivale a entrenar sobre píxeles y medir el tiempo
+   en A40 (~9 h por corrida).
+5. Entrenamiento: CoinRun {uni, hier} × 5 semillas = 10 jobs en A40
+   (`train_bc_coinrun.sbatch`) [lanzados 2026-10-01, jobs 30561-30570]; D4RL {uni, hier} × 3
+   tareas × 3 semillas = 18 jobs [tras la decisión del paso 3].
+6. Varianza de evaluación en CoinRun: 5 semillas de entrenamiento × varios
+   `rand_seed` de evaluación (`eval_coinrun_seeds.py --eval-seeds`, listo).
+7. Interpretabilidad (AttAttr/SARFA, ablación por grupos) con solo
+   state/action. [scripts adaptados y verificados, §7.3; falta correrlos
+   sobre los modelos entrenados]
+
+Estimación original: ~4-5 días de implementación (+2 si entra DMC),
+cómputo de ~1 día para D4RL y ~3-6 días de reloj para CoinRun, ~3-4 días
+de eval + interpretabilidad. Total ~2-3 semanas (~3-4 con DMC). La
+implementación de CoinRun quedó lista el primer día; la duración de las
+corridas quedó en ~9 h cada una en A40; con 2 A40 libres, las 10 corridas
+toman ~2 días de reloj.
 
 ### 7.3 Implementación (2026-10-01)
 
@@ -2319,13 +2331,39 @@ codifica un frame negro (vector ≠ 0) y el de embeddings pone ceros. No
 afecta: el relleno va al final, la atención causal impide que lo vean los
 pasos reales y la loss lo enmascara.
 
-**Verificación (en curso).**
-1. `test_precomputed_embeddings.py` (job 30551, A40): embedding guardado ==
-   recalculado; BC-uni y BC-hier dan los mismos logits/argmax con píxeles y
-   con embeddings en ventanas reales con relleno.
-2. `e2e_emb_vs_pix_coinrun.sbatch` (job 30552): 300 pasos de BC-uni con la
-   misma semilla sobre `data/` y `data_emb/` (mismos batches), comparando
-   `action_loss` cada 10 pasos, con TF32 desactivado.
+**Verificación (hecha, 2026-10-01).**
+
+1. `test_precomputed_embeddings.py` (job 30551, A40): embedding guardado vs.
+   recalculado, diferencia máxima **0** (idénticos bit a bit) en 3
+   episodios; resto de las claves idénticas. BC-uni y BC-hier con sus
+   configs reales: logits con píxeles vs. con embeddings difieren como
+   máximo **~1e-6**, argmax igual en todos los pasos.
+2. Entrenamiento de punta a punta, BC-uni, 300 pasos, semilla 1, TF32
+   desactivado, `action_loss` cada 10 pasos (31 puntos):
+
+| Comparación | Máx. \|diff\| de loss | Signo de la diferencia |
+|---|---|---|
+| píxeles vs. píxeles, misma A40 (job 30560, `e2e_pix_vs_pix_coinrun.sbatch`) | **0** (bit a bit) | — |
+| píxeles vs. embeddings, misma A40 (job 30552, `e2e_emb_vs_pix_coinrun.sbatch`) | 4,0e-4 | 22 +, 8 −, 1 = |
+| píxeles limpio vs. ruido N(0, 1e-7) en la salida del encoder, semilla 1 (job 30572, `e2e_noise_coinrun.sbatch`) | 4,6e-4 | 16 +, 15 − |
+| ídem, semilla de ruido 2 | 4,6e-4 | 16 +, 15 − |
+
+   Loss de referencia: 2,99 → 2,12 en los 300 pasos. Lectura: el
+   entrenamiento es determinista en una misma GPU, así que la diferencia
+   píxeles vs. embeddings no es ruido entre corridas; viene del ~1e-6 de
+   redondeo del embedding (la GPU usa otro algoritmo de convolución para
+   8.192 frames por batch que para un episodio suelto). Una perturbación
+   del tamaño del último bit de float32 se amplifica al **mismo orden y con
+   signo igual de mixto**, y la corrida limpia en una Titan RTX (`hydra`)
+   tampoco coincide bit a bit con la de la A40 (2,227556 vs. 2,227549 en el
+   paso 50). Precalcular equivale, entonces, a una perturbación de redondeo:
+   del mismo tamaño que cambiar de GPU y muy por debajo de la variación
+   entre semillas.
+
+**Tiempos en A40 con embeddings** (smoke de 2000 pasos, job 30551): BC-uni
+~12 pasos/s, BC-hier ~12-13 pasos/s → ~9 h por corrida de 400k pasos (vs.
+~32-36 h en 1080 Ti con píxeles). Las corridas caben en la QOS `regular`
+(límite 1 día), con `--time=20:00:00`.
 
 **Entrenamiento.** `train_bc_coinrun.sbatch`, parametrizado por `AGENT` y
 `SEED`: 400.010 pasos, snapshots en 0, 5k, 10k, 25k, 50k, 75k, 100k y cada
@@ -2512,7 +2550,9 @@ pasos reales y la loss lo enmascara.
 23. [x] **Etapa BC sin R (§7).** Opción `use_rtg: false` en DT/HDT, relleno
    de episodios cortos, muestreo con temperatura en la eval, con tests (§7.3).
 24. [ ] CoinRun BC-uni/BC-hier con hparams y nº de params de Benjamín
-   (~4,16M/~4,19M sin IMPALA), 5 semillas por topología (§7.1).
+   (~4,16M/~4,19M sin IMPALA), 5 semillas por topología (§7.1). Configs y
+   embeddings precalculados listos y verificados (§7.3, §7.4); 10 corridas
+   lanzadas en A40 (jobs 30561-30570, ~9 h cada una).
 25. [ ] **Decisión del usuario:** el re-entrenamiento sin R es en D4RL, en el
    DMC de Benjamín o en ambos (§7.0).
 26. [ ] Re-entrenar y evaluar sin R en el benchmark propioceptivo elegido.
