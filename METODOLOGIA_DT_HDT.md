@@ -2602,6 +2602,41 @@ regla de "ventana completa en evaluación"; su script de retorno DMC usaba
 - **Semillas (decisión del usuario):** 3 en DMC y 3 en CoinRun, igual que
   Benjamín → 18 + 6 = 24 corridas.
 
+### 7.8 Hallazgos sobre la evaluación de Benjamín (2026-10-01)
+
+**1. Desfase de un paso en su evaluación de retorno DMC (lazo cerrado).**
+`MaskingEvalAgentMultimodal` (`archive/MaskDP/Hierarchical/agent/mdp_return.py`)
+y su equivalente unistream (`archive/MaskDP/MaskDP_paper/agent/mdp_return.py`)
+usan `deque(maxlen=T_cond)` tanto para los estados como para las acciones.
+Con `T_cond=12` (sus `eval/final/*_return.sh`):
+- calentamiento (primeros 12 pasos): `n` estados y `n−1` acciones, lee
+  `pred_a[n−1]` (acción del estado actual): correcto;
+- desde el paso 13: 12 estados `s_{t−11}..s_t` y 12 acciones
+  `a_{t−12}..a_{t−1}`; en la grilla intercalada (estados en posiciones
+  pares, acciones en impares) cada estado queda emparejado con la acción
+  del paso anterior (`(s_t, a_{t−1})`), y se lee `pred_a[T_cond]`, la
+  posición de un paso futuro cuyo estado está enmascarado.
+
+No coincide con su Algoritmo 1 (tesis §3.2.3), donde la memoria de acciones va
+"siempre un elemento por detrás" y se lee "la acción del instante actual".
+Afecta igual a sus cuatro arquitecturas (la comparación interna es justa),
+pero sus retornos de lazo cerrado en DMC probablemente están subestimados. Su
+evaluación de CoinRun (`BCTEvalAgentMultimodal`, `maxlen=K−1` para acciones,
+lee la posición actual) no tiene el problema. Nuestro `BCAREvalAgent` tampoco.
+**Pendiente (decisión del usuario):** re-evaluar sus snapshots DMC con la
+alineación corregida, para comparar BC y MaskDP con evaluaciones correctas.
+
+**2. Su `eval_bct.py` no fija `rand_seed` en `ProcgenEnv`.** Cada corrida
+sortea niveles distintos (mismo problema que el punto 16 en nuestro
+`eval_coinrun.py`). Se usa tal cual para ser plug-and-play; es una fuente de
+varianza adicional en los números de CoinRun, suyos y nuestros.
+
+**Lanzadores** (rama `bc-plugandplay`, `slurm_bc/`): `train_bc_dmc.sbatch`
+y `train_bc_procgen.sbatch` (una semilla por job, configuración de §7.6),
+`eval_bc_dmc.sbatch` (su `eval_return.py`, 100 episodios, snapshot 400k) y
+`eval_bc_procgen.sbatch` (su `eval_bct.py`, 100 episodios por split, época
+50). Snapshots en `~/snapshot/bc_plugandplay/{dmc,procgen}/<agente>/<dominio>/<semilla>/`.
+
 ## Resumen de próximos pasos concretos
 
 1. [x] Igualar parámetros DT vs HDT (Etapa 0) y documentar la tabla de config.
