@@ -12,3 +12,4 @@ datasets/
 outputs/
 diagnostics_scripts/
 out/
+slurm_bc/logs/
