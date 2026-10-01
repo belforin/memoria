@@ -95,7 +95,12 @@ class SequenceEncoding(nn.Module):
             if x.dim() == 3 and x.size(-1) == 1:
                 x = x.squeeze(-1)
 
-        x = self.embed(x) + time_emb
+        if getattr(self, "pixel_obs", False) and x.dim() == 3:
+            # obs de pixeles ya pasadas por el encoder congelado
+            # (precompute_coinrun_embeddings.py), ver agent/dt.py
+            x = x + time_emb
+        else:
+            x = self.embed(x) + time_emb
 
         for blk in self.blocks:
             x = blk(x, self.attn_mask)

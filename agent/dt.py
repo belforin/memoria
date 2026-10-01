@@ -199,8 +199,9 @@ class DecisionTransformer(nn.Module):
         """
         returns_to_go: (B, T, 1)  -- ya escalado (dividido por return_scale).
                        Ignorado (puede ser None) si use_rtg=False.
-        obs:           (B, T, obs_dim) obs vectorial, o (B, T, H, W, C) uint8
-                       obs de pixeles (self.pixel_obs)
+        obs:           (B, T, obs_dim) obs vectorial, (B, T, H, W, C) uint8
+                       obs de pixeles (self.pixel_obs), o (B, T, n_embd)
+                       embeddings precalculados del encoder de pixeles
         action:        (B, T, action_dim) continua, o (B, T, 1) int64 indices
                        de accion (self.discrete_actions)
         timesteps:     (B, T) long tensor con el índice real dentro del
@@ -217,7 +218,14 @@ class DecisionTransformer(nn.Module):
         if not self.pixel_obs:
             obs = (obs - self.obs_mean) / self.obs_std
 
-        s = self.state_embed(obs) + time_emb
+        if self.pixel_obs and obs.dim() == 3:
+            # obs de pixeles ya pasadas por el encoder congelado
+            # (precompute_coinrun_embeddings.py, METODOLOGIA_DT_HDT.md
+            # seccion 7.4): (B, T, n_embd) float, identico a
+            # state_embed(pixeles) porque el encoder no se entrena.
+            s = obs + time_emb
+        else:
+            s = self.state_embed(obs) + time_emb
 
         if self.discrete_actions:
             # (B, T, 1) o (B, T) int -> (B, T) long, igual que

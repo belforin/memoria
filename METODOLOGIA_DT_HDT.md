@@ -2291,6 +2291,46 @@ rtgfix s1 da el bloque agregado **idéntico** al log guardado
 corren sobre snapshots BC (DT y HDT sin entrenar) reportando solo
 state/action.
 
+### 7.4 Embeddings precalculados del IMPALA y GPU (2026-10-01)
+
+**Tiempos con píxeles.** Smoke test de 2000 pasos en un 1080 Ti (`yodaxico`,
+job 30546) con la config de Benjamín: BC-uni 3,1 pasos/s (400k pasos
+≈ 36 h), BC-hier 3,5 pasos/s (≈ 32 h). `action_loss` (cross-entropy sobre
+15 acciones; azar = ln 15 ≈ 2,71): BC-uni 2,99 → 2,01, BC-hier 3,55 → 2,01.
+El costo lo domina el IMPALA: 128 × 64 = 8.192 frames por paso.
+
+**Decisión (usuario, 2026-10-01):** entrenar en las A40 de `ialab-high`
+(`llaima`, QOS `long`) y precalcular los embeddings del IMPALA.
+
+**Por qué precalcular no cambia el entrenamiento.** El IMPALA está
+congelado (los 622.144 params con `requires_grad=False`), solo tiene
+Conv/MaxPool/ReLU/Linear (nada que cambie entre train y eval), recibe uint8
+sin gradiente y no hay aumentación de datos: su salida es una función fija
+de cada frame. `precompute_coinrun_embeddings.py` la calcula una vez para
+todo `data/coinrun` (FP32 estricto, sin TF32) y escribe `data_emb/coinrun`
+(mismos archivos y claves, `observation` pasa de `(T+1, 64, 64, 3)` uint8 a
+`(T+1, 256)` float32). `DecisionTransformer.forward` y
+`SequenceEncoding.forward` saltan el encoder si la obs de píxeles llega como
+`(B, T, 256)`. El snapshot conserva los pesos del IMPALA, así que la
+evaluación en Procgen y la interpretabilidad siguen usando píxeles.
+
+Única diferencia: en las posiciones de **relleno** el camino con píxeles
+codifica un frame negro (vector ≠ 0) y el de embeddings pone ceros. No
+afecta: el relleno va al final, la atención causal impide que lo vean los
+pasos reales y la loss lo enmascara.
+
+**Verificación (en curso).**
+1. `test_precomputed_embeddings.py` (job 30551, A40): embedding guardado ==
+   recalculado; BC-uni y BC-hier dan los mismos logits/argmax con píxeles y
+   con embeddings en ventanas reales con relleno.
+2. `e2e_emb_vs_pix_coinrun.sbatch` (job 30552): 300 pasos de BC-uni con la
+   misma semilla sobre `data/` y `data_emb/` (mismos batches), comparando
+   `action_loss` cada 10 pasos, con TF32 desactivado.
+
+**Entrenamiento.** `train_bc_coinrun.sbatch`, parametrizado por `AGENT` y
+`SEED`: 400.010 pasos, snapshots en 0, 5k, 10k, 25k, 50k, 75k, 100k y cada
+50k hasta 400k, en `~/snapshot/coinrun_bc_{uni,hier}/coinrun/<seed>/`.
+
 ## Resumen de próximos pasos concretos
 
 1. [x] Igualar parámetros DT vs HDT (Etapa 0) y documentar la tabla de config.
