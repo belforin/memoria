@@ -7,7 +7,6 @@ name: bc_eval
 obs_shape: ???
 action_shape: ???
 device: ${device}
-use_tb: ${use_tb}
 
 K: null            # null = traj_length del snapshot (ventana completa)
 temperature: 1.0   # acciones discretas (Procgen), como eval_bct.yaml

@@ -34,6 +34,14 @@ echo "episodios en $PROCGEN_NPZ: $(ls $PROCGEN_NPZ | wc -l)"
 echo "=== 2. tests"
 python test_bc_ar.py
 
+echo "=== 2b. diagnostico DMC: 1000 pasos de bc_uni con 16 workers (vs. 4 de Benjamin)"
+python pretrain.py --config-name pretrain_full \
+    agent=bc_uni task=cheetah_run seed=1 +action_repeat=1 \
+    replay_buffer_dir="$DMC_DATA" replay_buffer_num_workers=16 \
+    num_grad_steps=1001 log_every_steps=250 "snapshots=[]" \
+    goal_buffer_dir=null snapshot_dir=$OUT/snap_dmc_w16 hydra.run.dir=$OUT/dmc_w16 \
+    use_wandb=false use_tb=true exp_name=smoke_dmc_w16
+
 for AGENT in bc_uni bc_hier; do
     echo "=== 3. DMC cheetah_run $AGENT"
     python pretrain.py --config-name pretrain_full \
