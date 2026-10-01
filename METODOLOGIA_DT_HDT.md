@@ -2645,6 +2645,52 @@ y `train_bc_procgen.sbatch` (una semilla por job, configuración de §7.6),
 `eval_bc_procgen.sbatch` (su `eval_bct.py`, 100 episodios por split, época
 50). Snapshots en `~/snapshot/bc_plugandplay/{dmc,procgen}/<agente>/<dominio>/<semilla>/`.
 
+### 7.9 Smoke test y lanzamiento de las 24 corridas (2026-10-01)
+
+**Smoke test** (job 30623, A40, sus scripts sin modificar): tests OK en su
+entorno; DMC cheetah_run 2000 pasos + 2 episodios con su `eval_return.py`
+(BC-uni 308, BC-hier 367; sin significado con tan poco entrenamiento);
+CoinRun 2000 pasos + 2 episodios por split con su `eval_bct.py` (K=16,
+muestreo T=1.0). `action_loss` baja (DMC 0,86 → 0,039; CoinRun 3,18 → 2,12).
+Un primer intento falló por `use_tb: ${use_tb}` en `agent/bc_eval.yaml`
+(la config de `eval_bct.py` no tiene esa clave); corregido.
+
+**Velocidad** (pasos/s; duración proyectada de una corrida):
+
+| Configuración | A40 | Titan RTX |
+|---|---|---|
+| DMC BC-uni (400k pasos) | 6,6 (~17 h) | 5,8 (~19 h) |
+| DMC BC-hier (400k) | 11,3 (~10 h) | 9,9 (~11 h) |
+| CoinRun BC-uni (781k) | ~26 (~8,3 h) | 19,5 (~11 h) |
+| CoinRun BC-hier (781k) | ~46 (~4,7 h) | 17,1 (~13 h) |
+
+En DMC el cuello de botella es cómputo (batch 384 × 128 tokens), no el
+cargador de datos: con 16 workers va igual que con 4. La prueba en 2080 Ti
+(job 30649) terminó sin números (salida redirigida a `/dev/null`); no se
+depuró porque la Titan RTX alcanza.
+
+**Decisiones del usuario:** repartir en más GPUs (no activar TF32), límite de
+24 h por job (sin QOS `long`), 3 semillas en DMC y CoinRun.
+
+**Lanzamiento** (rama `bc-plugandplay`, `slurm_bc/train_bc_{dmc,procgen}.sbatch`,
+entorno de Benjamín `/home/bmancilla/miniconda3/envs/maskdp_procgen` en solo
+lectura, el mismo para las 24 corridas):
+
+| Grupo | GPU | Jobs |
+|---|---|---|
+| DMC BC-uni cheetah s1-s3, walker s1-s2 | A40 (`ialab-high`) | 30636, 30637, 30639, 30640, 30641 |
+| DMC BC-uni walker s3, quadruped s1-s3 | Titan RTX (`ialab-low`) | 30655-30658 |
+| DMC BC-hier, 3 tareas × 3 semillas | Titan RTX | 30659-30667 |
+| CoinRun BC-uni / BC-hier, 3 semillas | Titan RTX | 30668-30673 |
+
+Las semillas de DMC BC-uni quedan repartidas entre A40 y Titan RTX; la
+diferencia es de redondeo (§7.4). CoinRun va entero en Titan RTX (sin TF32
+en la convolución del IMPALA, a diferencia de la A40).
+
+**Entorno:** la copia propia `maskdp-ben` (job 30612) sigue copiando (~82% a
+los 76 min); queda como respaldo si el entorno de Benjamín cambiara durante
+las corridas.
+
 ## Resumen de próximos pasos concretos
 
 1. [x] Igualar parámetros DT vs HDT (Etapa 0) y documentar la tabla de config.
@@ -2842,5 +2888,8 @@ y `train_bc_procgen.sbatch` (una semilla por job, configuración de §7.6),
 29. [x] Leer la tesis de Benjamín: configuración CoinRun reportada, variante
    de referencia en DMC y CoinRun, tarea de quadruped y tablas de
    resultados (§7.5). Hecho en §7.6.
-30. [ ] Rama `bc-plugandplay`: tests de `agent/bc_ar.py`, configs, entorno
-   conda de Benjamín, smoke tests en DMC y CoinRun.
+30. [x] Rama `bc-plugandplay`: tests de `agent/bc_ar.py`, configs, entorno
+   conda de Benjamín, smoke tests en DMC y CoinRun (§7.7, §7.9).
+31. [ ] 24 corridas BC en el pipeline de Benjamín (18 DMC + 6 CoinRun, 3
+   semillas), lanzadas el 2026-10-01 (§7.9). Al terminar: evaluar con
+   `slurm_bc/eval_bc_{dmc,procgen}.sbatch` y comparar contra §7.6.
