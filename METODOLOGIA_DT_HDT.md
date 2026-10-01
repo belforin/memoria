@@ -2623,8 +2623,16 @@ Afecta igual a sus cuatro arquitecturas (la comparación interna es justa),
 pero sus retornos de lazo cerrado en DMC probablemente están subestimados. Su
 evaluación de CoinRun (`BCTEvalAgentMultimodal`, `maxlen=K−1` para acciones,
 lee la posición actual) no tiene el problema. Nuestro `BCAREvalAgent` tampoco.
-**Pendiente (decisión del usuario):** re-evaluar sus snapshots DMC con la
-alineación corregida, para comparar BC y MaskDP con evaluaciones correctas.
+**Decisión del usuario (2026-10-01): no se re-evalúan sus snapshots**; es un
+error de su evaluación y se deja documentado, sin cuantificar. Antes de la
+decisión se alcanzó a correr una prueba corta (cheetah_run sin aumentación,
+semilla 1, **solo 2 episodios**, no concluyente): reduce_enc 758,6 (original)
+vs. 770,7 (corregida); unistream 740,1 vs. 817,3. Los scripts
+(`reeval_ben/` en el worktree `~/MaskDP_bc`: resolución de sus 72 snapshots
+finales y wrapper que corre su `eval_return.py` con la alineación corregida)
+quedaron escritos y probados, fuera de git. Al comparar BC (evaluación sin
+desfase) contra sus números de DMC hay que mencionar esta diferencia de
+protocolo.
 
 **2. Su `eval_bct.py` no fija `rand_seed` en `ProcgenEnv`.** Cada corrida
 sortea niveles distintos (mismo problema que el punto 16 en nuestro
