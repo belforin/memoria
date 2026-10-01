@@ -1,0 +1,23 @@
+# @package agent
+# Agente de evaluacion de BC-uni/BC-hier para eval_return.py (DMC) y
+# eval_bct.py (Procgen): agent=bc_eval agent.path=<snapshot>. Closed-loop,
+# ventana deslizante de K pasos, accion del estado actual en cada paso.
+_target_: agent.bc_ar.BCAREvalAgent
+name: bc_eval
+obs_shape: ???
+action_shape: ???
+device: ${device}
+use_tb: ${use_tb}
+
+K: null            # null = traj_length del snapshot (ventana completa)
+temperature: 1.0   # acciones discretas (Procgen), como eval_bct.yaml
+sample: true       # Procgen: muestreo categorico (protocolo de la tesis); DMC lo ignora
+
+# eval_return.py los lee de la config (log y retorno post-warmup); el agente
+# autoregresivo no los usa
+T_cond: 12
+T_pred: 12
+replan_freq: 1
+
+path: null
+transformer_cfg: null

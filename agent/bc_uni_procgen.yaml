@@ -1,0 +1,36 @@
+# @package agent
+# BC autoregresivo sin return-to-go, topologia unistream, CoinRun (belforin/
+# memoria, METODOLOGIA_DT_HDT.md seccion 7.6). Configuracion adoptada en la
+# tesis de Benjamin (Tablas 3.2, 3.3, 4.6): lr 1e-4, batch 64, contexto 16,
+# dropout 0.1 (attn/resid/mlp, embd 0 como su mdp_procgen.yaml), weight decay
+# 0.01 solo en matrices de Linear/Conv entrenables, IMPALA con convoluciones
+# preentrenadas y proyeccion aleatoria, todo congelado.
+_target_: agent.bc_ar.BCARAgent
+name: bc_uni_procgen
+obs_shape: ???
+action_shape: ???
+device: ${device}
+lr: 1e-4
+use_tb: ${use_tb}
+batch_size: 64
+transformer_cfg:
+  topology: uni
+  n_embd: 256
+  n_head: 4
+  n_layer: 5
+  traj_length: 16
+  embd_pdrop: 0.0
+  attn_pdrop: 0.1
+  resid_pdrop: 0.1
+  mlp_pdrop: 0.1
+  weight_decay: 0.01
+  use_pixel_obs: true
+  pixel_obs_shape: [64, 64, 3]
+  pixel_encoder_type: procgen_impala
+  pretrained_encoder_path: ???
+  impala_projection: random
+  discrete_actions: true
+  num_actions: 15
+  label_smoothing: 0.0
+  modality_dropout: false
+  modality_dropout_prob: 0.0

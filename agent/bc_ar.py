@@ -103,14 +103,20 @@ class BCARModel(nn.Module):
         self.action_head = nn.Sequential(
             nn.LayerNorm(self.n_embd), nn.ReLU(inplace=True), nn.Linear(self.n_embd, head_out), *head_act
         )
+        self.drop = nn.Dropout(float(_cfg(config, "embd_pdrop", 0.0)))
 
         self.apply(self._init_weights)
 
         # pesos preentrenados DESPUES de self.apply: si no, el init los pisa
-        # (ver METODOLOGIA_DT_HDT.md seccion 3 de belforin/memoria)
+        # (ver METODOLOGIA_DT_HDT.md seccion 3 de belforin/memoria).
+        # impala_projection="random" (default): solo las convoluciones vienen
+        # del checkpoint; la proyeccion lineal queda con su init Xavier y
+        # congelada, igual que todas las variantes de la tesis de Benjamin
+        # (seccion 3.4.2; METODOLOGIA_DT_HDT.md seccion 7.6).
         ckpt = _cfg(config, "pretrained_encoder_path", None)
         if self.pixel_obs and ckpt:
-            load_procgen_impala(self.state_embed, ckpt, freeze=True)
+            random_proj = str(_cfg(config, "impala_projection", "random")) == "random"
+            load_procgen_impala(self.state_embed, ckpt, freeze=True, ignore_proj=random_proj)
 
     @staticmethod
     def _init_weights(m):
@@ -168,7 +174,7 @@ class BCARModel(nn.Module):
             a = self.act_stack(a + self.act_pos_embed(pos))
 
         x = torch.stack([s, a], dim=2).reshape(B, 2 * T, self.n_embd)
-        x = self.stack(x)
+        x = self.stack(self.drop(x))
         return self.action_head(x[:, 0::2])
 
     def action_loss(self, pred, action, mask=None):

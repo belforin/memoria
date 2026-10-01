@@ -1,0 +1,29 @@
+# @package agent
+# BC autoregresivo sin return-to-go, topologia unistream, DMC propioceptivo
+# (belforin/memoria, METODOLOGIA_DT_HDT.md seccion 7.6). Hiperparametros de
+# la etapa propioceptiva de la tesis de Benjamin (Tablas 3.2 y 3.3): lr 1e-4,
+# batch 384, contexto 64, 4 heads, sin dropout ni weight decay.
+_target_: agent.bc_ar.BCARAgent
+name: bc_uni
+obs_shape: ???
+action_shape: ???
+device: ${device}
+lr: 1e-4
+use_tb: ${use_tb}
+batch_size: 384
+transformer_cfg:
+  topology: uni
+  n_embd: 256
+  n_head: 4
+  n_layer: 5          # = sus 3 capas de encoder + 2 de decoder
+  traj_length: 64
+  embd_pdrop: 0.0
+  attn_pdrop: 0.0
+  resid_pdrop: 0.0
+  mlp_pdrop: 0.0
+  weight_decay: 0.0
+  use_pixel_obs: false
+  discrete_actions: false
+  # solo los lee pretrain.py para su archivo wandb_info.txt; el modelo no los usa
+  modality_dropout: false
+  modality_dropout_prob: 0.0
