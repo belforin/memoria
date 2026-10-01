@@ -2175,6 +2175,13 @@ tanto.
 
 ### 7.1 Referencias de Benjamín a igualar (verificadas en su código)
 
+> **⚠ Corregido en §7.5 (2026-10-01):** los hiperparámetros de CoinRun de
+> abajo son los valores por defecto de `mdp_procgen.yaml`, pero sus
+> lanzadores reales (`slurms/procgen/pretrain_{uni,hier}.sh`) usan otros
+> (batch 64, contexto 16/64, 800k pasos, dropout 0.1, WD 0.01, early
+> stopping). La configuración reportada en su tesis está pendiente de
+> confirmar.
+
 - Config CoinRun (`upstream/hier-procgen:agent/mdp_procgen.yaml`):
   `n_embd=256`, `n_head=4`, `traj_length=64`, `batch_size=128`, `lr=1e-4`,
   dropout 0, weight decay 0, PE sinusoidal fija, `num_grad_steps=400010`,
@@ -2369,6 +2376,117 @@ pasos reales y la loss lo enmascara.
 `SEED`: 400.010 pasos, snapshots en 0, 5k, 10k, 25k, 50k, 75k, 100k y cada
 50k hasta 400k, en `~/snapshot/coinrun_bc_{uni,hier}/coinrun/<seed>/`.
 
+### 7.5 Cambio de enfoque: plug-and-play en el pipeline de Benjamín (2026-10-01)
+
+**Respuesta recibida** (sobre la duda de §7.0): *"use the same tasks as Ben
+if that's possible. The dataset and environments should be the same. It
+should ideally just be a plug-and-play of a different model."*
+
+**Decisiones del usuario:**
+- Nuestro BC-uni/BC-hier se enchufa como un agente más **dentro del código
+  de Benjamín**: rama `bc-plugandplay` de este repo, creada desde
+  `upstream/hier-procgen` y trabajada en el worktree `~/MaskDP_bc`. Sus
+  `pretrain.py`, `replay_buffer.py`, `dmc.py`, `eval_return.py` y
+  `eval_bct.py` se usan sin cambios. `main` (este documento, D4RL, nuestro
+  pipeline CoinRun) queda intacto.
+- Sirve para DMC y CoinRun: su `pretrain.py` entrena ambos.
+- Las 10 corridas de CoinRun de §7.4 (jobs 30561-30570) se **cancelaron**
+  (s1 y s2 llevaban ~1 h; las demás no habían arrancado). Se rehacen en su
+  pipeline.
+- La inconsistencia de quadruped (abajo) se replica tal cual y se documenta.
+
+**Verificaciones sobre su pipeline:**
+- La rama es idéntica a `/home/bmancilla/archive/MaskDP/Hier_procgen` (0
+  líneas distintas en `pretrain.py`, `replay_buffer.py`, `dmc.py`,
+  `eval_return.py`, `eval_bct.py`, configs y agentes), o sea, el código de
+  sus resultados de CoinRun.
+- Sus resultados DMC salen de dos copias más viejas:
+  `archive/MaskDP/MaskDP_paper` (unistream) y `archive/MaskDP/Hierarchical`
+  (jerárquico). Frente a la rama, `dmc.py` y `eval_return.py` solo difieren
+  en valores por defecto (la rama asume píxeles de V-D4RL; se corrige con
+  `obs_type=states action_repeat=1`); `pretrain_full.yaml` tiene
+  `num_grad_steps=500010` en vez de 400010. El buffer cambió (reparte
+  archivos por posición en la lista en vez de por índice del nombre, y
+  agrega un corte train/eval/bc opcional), pero simulando ambas lógicas
+  cargan **exactamente los mismos episodios** en los 3 dominios con 4 y
+  16 workers.
+- **Qué datos entran realmente en DMC.** Su `pretrain.py` apunta a
+  `maskdp_train/<dominio>` (expert de todas las tareas + semi + sup +
+  unsup: 32.600 episodios en cheetah), pero el buffer carga en orden
+  alfabético hasta `replay_buffer_size=2.000.000` transiciones, así que en
+  la práctica entrena con ~2000 episodios expertos de **una sola tarea** por
+  dominio (2004 con 4 workers, su lanzador del paper):
+
+| Dominio | Datos que entran | Tarea de evaluación (`slurms/eval/final/*_return.sh`) |
+|---|---|---|
+| cheetah | `expert/cheetah_run` | cheetah_run |
+| walker | `expert/walker_run` | walker_run |
+| quadruped | `expert/quadruped_run` | **quadruped_walk** |
+
+  En quadruped entrena con datos de *run* y evalúa en *walk*; su lanzador
+  dice `task=quadruped_walk`, pero `task` solo fija el entorno, no los
+  datos. No está claro si es intencional; pendiente de confirmar con su
+  tesis o con él.
+- **Hiperparámetros DMC** (iguales en sus dos repos): `lr=1e-4`, batch 384,
+  contexto 64, `n_embd=256`, 4 heads, sin dropout ni weight decay (Adam o
+  AdamW con WD 0), 400k pasos, buffer de 2M con 4 workers. Evaluación: snapshot
+  400k, 10 episodios, `action_repeat=1`, `T_cond=12`, `T_pred=12`,
+  `replan_freq=1`, 3 semillas por dominio.
+- **Hiperparámetros CoinRun: no son los de §7.1.** Sus lanzadores reales:
+  `pretrain_uni.sh` (repo `MaskDP_paper`) batch 64, contexto 16, 800k
+  pasos, dropout 0.1, WD 0.01, peso de la loss de acción 0.03, early
+  stopping por evaluación BCT; `pretrain_hier.sh` (repo `Hier_procgen`)
+  batch 64, contexto 64 por defecto (hay snapshots `hier_16` y `hier_64`),
+  801k pasos, mismos dropout/WD/early stopping. Las corridas de §7.4 usaban
+  los valores por defecto de `mdp_procgen.yaml` (batch 128, contexto 64,
+  400k, sin regularización), así que no eran comparables. Falta saber qué
+  configuración y qué corridas reporta su tesis.
+- **Su evaluación DMC** (`MaskingEvalAgentMultimodal`) tras el calentamiento
+  de `T_cond` pasos ejecuta la predicción en la posición `T_cond` de la
+  ventana, cuyo estado aún no se observó; podría ser un desfase de un paso.
+  Pendiente de revisar. Nuestro agente de evaluación no lo replica: predice
+  siempre la acción del estado actual.
+- **Entorno conda:** su código usa `np.float` (eliminado en NumPy ≥1.24), así
+  que `maskdp-env` no sirve para correrlo; hay que clonar sus entornos
+  (`/home/bmancilla/miniconda3/envs/maskdp`, `maskdp_procgen`).
+
+**Implementación en la rama** (`agent/bc_ar.py`, sin tests todavía):
+- `BCARModel`: topología `uni` (5 bloques causales sobre `(s, a)`
+  intercalados) o `hier` (stack causal por modalidad + bloques conjuntos),
+  acción `a_t` desde `s_t`, con los `Block` de su `attention.py` (misma
+  cantidad de parámetros que los nuestros; MLP con GELU). Cambios respecto
+  a `agent/dt.py`/`agent/hdt.py` de `main`, para no tocar su pipeline:
+  posición dentro de la ventana en vez de timestep del episodio (su buffer
+  no lo entrega) y sin normalización de observaciones (él tampoco
+  normaliza). Acepta embeddings precalculados del IMPALA (§7.4).
+- `BCARAgent`: misma interfaz que `MaskedDPMultimodalAgent` (`.model`,
+  `.update(replay_iter, step)`, `.train()`), consume su batch
+  `(obs, action, reward, discount, next_obs, mask)`, AdamW con WD solo en
+  matrices 2D.
+- `BCAREvalAgent`: misma interfaz que sus agentes de evaluación (`.mdp`,
+  `reset()`, `act(obs)`, y los campos `T_cond`/`T_pred`/`replan_freq` y
+  `K`/`temperature`/`sample` que leen `eval_return.py`/`eval_bct.py`);
+  ventana deslizante de K pasos, closed-loop.
+
+**Paridad en DMC** (parámetros entrenables; los de Benjamín instanciando sus
+modelos con sus configs: unistream `MaskedDP` de `MaskDP_paper`, jerárquico
+`reduce_enc` = `MaskedDPMultimodal` de `Hierarchical` con
+`enc_n_embd=128`, fusión cruzada):
+
+| Dominio (obs/acción) | BC-uni, 5 bloques | Benjamín unistream | BC-hier, 2+2+1 | Benjamín `reduce_enc` |
+|---|---|---|---|---|
+| cheetah (17/6) | 3.973.638 | 4.094.487 (−3,0%) | 3.990.022 | 4.161.815 (−4,1%) |
+| walker (24/6) | 3.975.430 | 4.098.078 (−3,0%) | 3.991.814 | 4.164.510 (−4,1%) |
+| quadruped (78/12) | 3.992.332 | 4.128.858 (−3,3%) | 4.008.716 | 4.187.610 (−4,3%) |
+
+Con la posición dentro de la ventana (64 posiciones en vez de 1000
+timesteps) los modelos de CoinRun también quedan en ~−4,5% (la tabla de
+§7.3 ya no aplica a la rama).
+
+**Bloqueado hasta tener la tesis:** configuración CoinRun reportada;
+variante de referencia en DMC y CoinRun (notricks/jitter/mdrop;
+reduce_enc/self/neck); tarea de quadruped; tablas de resultados.
+
 ## Resumen de próximos pasos concretos
 
 1. [x] Igualar parámetros DT vs HDT (Etapa 0) y documentar la tabla de config.
@@ -2552,11 +2670,19 @@ pasos reales y la loss lo enmascara.
 24. [ ] CoinRun BC-uni/BC-hier con hparams y nº de params de Benjamín
    (~4,16M/~4,19M sin IMPALA), 5 semillas por topología (§7.1). Configs y
    embeddings precalculados listos y verificados (§7.3, §7.4); 10 corridas
-   lanzadas en A40 (jobs 30561-30570, ~9 h cada una).
-25. [ ] **Decisión del usuario:** el re-entrenamiento sin R es en D4RL, en el
-   DMC de Benjamín o en ambos (§7.0).
+   lanzadas en A40 (jobs 30561-30570) y **canceladas**: se rehacen dentro
+   del pipeline de Benjamín (§7.5), con su configuración real.
+25. [x] **Decisión del usuario:** el re-entrenamiento sin R es en D4RL, en el
+   DMC de Benjamín o en ambos (§7.0). Respuesta: mismas tareas, datos y
+   entornos que Benjamín, como plug-and-play de otro modelo en su pipeline
+   (§7.5).
 26. [ ] Re-entrenar y evaluar sin R en el benchmark propioceptivo elegido.
 27. [ ] Varianza de evaluación en CoinRun: semillas de entrenamiento ×
    `rand_seed` de evaluación (reemplaza el punto 22).
 28. [ ] Interpretabilidad sobre los modelos BC (reemplaza los puntos 17-19
    para la etapa nueva).
+29. [ ] Leer la tesis de Benjamín: configuración CoinRun reportada, variante
+   de referencia en DMC y CoinRun, tarea de quadruped y tablas de
+   resultados (§7.5).
+30. [ ] Rama `bc-plugandplay`: tests de `agent/bc_ar.py`, configs, entorno
+   conda de Benjamín, smoke tests en DMC y CoinRun.
