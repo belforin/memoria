@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:a40:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=20:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=/home/belforin/MaskDP_bc/slurm_bc/logs/%x_%j.out
 #SBATCH --error=/home/belforin/MaskDP_bc/slurm_bc/logs/%x_%j.err
 #SBATCH --comment="Entrenamiento de behaviour cloning sin return-to-go en CoinRun dentro del pipeline de Benjamin"
