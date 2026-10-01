@@ -22,3 +22,6 @@ pretrained_encoders/
 
 # eval rollout videos (large binaries)
 videos_*/
+
+# tesis de Benjamin (documento de otra persona, no versionar)
+tesis_benjamin.pdf

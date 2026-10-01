@@ -2487,6 +2487,82 @@ timesteps) los modelos de CoinRun también quedan en ~−4,5% (la tabla de
 variante de referencia en DMC y CoinRun (notricks/jitter/mdrop;
 reduce_enc/self/neck); tarea de quadruped; tablas de resultados.
 
+### 7.6 Configuración de Benjamín según su tesis (2026-10-01)
+
+Leída `tesis_benjamin.pdf` (copiada por el usuario a la raíz del repo y
+excluida de git). Resuelve lo bloqueado en §7.5.
+
+**Paridad (Tabla 3.1 de la tesis, cheetah):** unistream 4.094.487,
+self_attn 4.171.711, reduce_enc 4.161.815, reduce_all 4.032.087. Coinciden
+exactamente con lo obtenido instanciando sus modelos (§7.5). **Variante
+jerárquica de referencia: reduce_enc** (elegida por agregación de rangos,
+su §3.6.1), en DMC y CoinRun.
+
+**DMC propioceptivo** (sus §3.2 y §4.1; Tablas 3.2, 3.3, 3.6, 4.1):
+- Tareas: cheetah_run, walker_run, quadruped_walk; solo la partición
+  near-expert. La tesis no menciona entrenar quadruped con datos de
+  quadruped_run: es un efecto del tope de 2M del buffer (§7.5), no una
+  decisión documentada. Se replica tal cual (decisión del usuario) y se
+  reporta.
+- Entrenamiento: batch 384, contexto 64, `lr=1e-4`, 4 heads, sin
+  regularización (dropout y WD en 0), 400k pasos, desde cero.
+- Evaluación de retorno: lazo cerrado replanificando en cada paso,
+  **100 episodios** por configuración × 3 semillas (sus scripts
+  `eval/final/*_return.sh` usaban `num_eval_episodes=10`; se sigue la
+  tesis).
+- Resultados de referencia, retorno en lazo cerrado (media ± std, 3
+  semillas):
+
+| Condición | Arquitectura | cheetah_run | walker_run | quadruped_walk |
+|---|---|---|---|---|
+| sin aumentación | unistream | 685,67 ± 83,57 | 470,32 ± 126,91 | 922,76 ± 49,31 |
+| sin aumentación | reduce_enc | 428,78 ± 372,63 | 452,43 ± 278,72 | 900,78 ± 47,54 |
+| jitter + modality dropout | unistream | 639,60 ± 95,38 | 607,52 ± 11,67 | 933,90 ± 5,75 |
+| jitter + modality dropout | reduce_enc | 699,01 ± 74,29 | 536,05 ± 29,98 | 922,10 ± 22,47 |
+
+  Para nuestro BC (sin técnicas propias del entrenamiento enmascarado) la
+  comparación directa es la condición **sin aumentación**.
+
+**CoinRun** (sus §3.4 y §4.2; Tablas 3.3, 4.6-4.8):
+- Datos: expert 1M de Mediratta et al., niveles 0-199, sin
+  modificaciones.
+- Configuración adoptada: **contexto 16**, batch 64, `lr=1e-4`, dropout
+  0,1 (attn/embd/resid), weight decay 0,01 (excluyendo encoder visual,
+  sesgos, LayerNorm, embeddings y tokens de máscara), sin aumentación,
+  50 épocas con checkpoint cada 5; se reporta el último (época 50 =
+  50 × 1M/64 ≈ 781k pasos).
+- Encoder visual: IMPALA con convoluciones preentrenadas y **proyección
+  lineal aleatoria**, todo congelado, en todas las variantes (control
+  experimental: todas reciben la misma representación). En el código de
+  su unistream (`MaskDP_paper/agent/mdp.py`) la proyección se carga
+  preentrenada (`n_embd=256` coincide con el checkpoint), pero
+  `initialize_weights()` corre después y la reinicializa con Xavier (su
+  `_init_weights` no salta parámetros congelados). El efecto coincide con
+  lo que dice la tesis, aunque en unistream sea por el orden de llamadas.
+  Nuestros modelos hacen lo mismo.
+- Relleno de episodios cortos con máscara de validez en la loss (igual que
+  §7.3).
+- Evaluación: lazo cerrado, ventana deslizante, muestreo categórico con
+  temperatura 1,0, 100 episodios por split × 3 semillas; se reportan
+  train (niveles 0-199) y test (250+); val solo para monitoreo.
+- Resultados de referencia (Tabla 4.6, configuración adoptada):
+
+| Arquitectura | Train | Test | Brecha | Exactitud de acción (train) |
+|---|---|---|---|---|
+| unistream | 9,07 ± 0,12 | 8,07 ± 0,64 | 1,00 | 0,464 |
+| reduce_enc | 9,47 ± 0,50 | 8,93 ± 0,31 | 0,54 | 0,369 |
+| PPO (referencia externa) | 9,60 | 8,30 | 1,30 | – |
+
+  Tabla 4.7 (sin aumentación): con contexto 64 ambos rinden menos en test
+  (reduce_enc 7,40, unistream 7,33 con regularización).
+
+**Configuración que se usará para BC-uni/BC-hier en la rama
+`bc-plugandplay`:** la de arriba para cada etapa, con la misma estructura
+de 5 bloques (uni) y 2+2+1 (hier) a `n_embd=256`, 4 heads. En DMC, ventana
+de evaluación K = 64 (contexto completo, como su evaluación BCT y su
+regla de "ventana completa en evaluación"; su script de retorno DMC usaba
+`T_cond=12` para su modelo enmascarado).
+
 ## Resumen de próximos pasos concretos
 
 1. [x] Igualar parámetros DT vs HDT (Etapa 0) y documentar la tabla de config.
@@ -2681,8 +2757,8 @@ reduce_enc/self/neck); tarea de quadruped; tablas de resultados.
    `rand_seed` de evaluación (reemplaza el punto 22).
 28. [ ] Interpretabilidad sobre los modelos BC (reemplaza los puntos 17-19
    para la etapa nueva).
-29. [ ] Leer la tesis de Benjamín: configuración CoinRun reportada, variante
+29. [x] Leer la tesis de Benjamín: configuración CoinRun reportada, variante
    de referencia en DMC y CoinRun, tarea de quadruped y tablas de
-   resultados (§7.5).
+   resultados (§7.5). Hecho en §7.6.
 30. [ ] Rama `bc-plugandplay`: tests de `agent/bc_ar.py`, configs, entorno
    conda de Benjamín, smoke tests en DMC y CoinRun.
