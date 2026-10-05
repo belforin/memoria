@@ -15,7 +15,8 @@
 # Benjamin sin modificar (belforin/memoria METODOLOGIA_DT_HDT.md seccion 7.6):
 # snapshot 400k, 100 episodios, action_repeat=1, seed de evaluacion = seed de
 # entrenamiento (como sus scripts eval/final/*_return.sh).
-# Variables opcionales: AGENTS, TASKS, SEEDS, STEP, EPISODES.
+# Variables opcionales: AGENTS, TASKS, SEEDS, STEP, EPISODES, EVAL_K (largo de
+# la ventana de evaluacion; vacio = traj_length del snapshot, 64 en DMC).
 set -uo pipefail
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate ${BC_ENV:-maskdp-ben}
@@ -25,6 +26,9 @@ cd $HOME/MaskDP_bc
 source slurm_bc/paths.sh
 STEP=${STEP:-400000}
 EPISODES=${EPISODES:-100}
+EVAL_K=${EVAL_K:-}
+if [ -n "$EVAL_K" ]; then K_ARGS="agent.K=$EVAL_K"; K_TAG="_K$EVAL_K"; else K_ARGS=""; K_TAG=""; fi
+echo "EVAL_K=${EVAL_K:-traj_length}"
 
 for AGENT in ${AGENTS:-bc_uni bc_hier}; do
   for TASK in ${TASKS:-cheetah_run walker_run quadruped_walk}; do
@@ -34,9 +38,9 @@ for AGENT in ${AGENTS:-bc_uni bc_hier}; do
       if [ ! -f "$SNAP" ]; then echo "[falta] $SNAP"; continue; fi
       echo "=== $AGENT $TASK s$SEED"
       python eval_return.py agent=bc_eval task=$TASK seed=$SEED obs_type=states action_repeat=1 \
-          agent.path=$SNAP num_eval_episodes=$EPISODES use_wandb=false \
-          hydra.run.dir=$BC_RUNS/eval_dmc/${AGENT}_${TASK}_s${SEED} \
-          exp_name=eval_${AGENT}_${TASK}_s${SEED} 2>&1 | grep -E "return=|Error|Traceback"
+          agent.path=$SNAP $K_ARGS num_eval_episodes=$EPISODES use_wandb=false \
+          hydra.run.dir=$BC_RUNS/eval_dmc/${AGENT}_${TASK}_s${SEED}${K_TAG} \
+          exp_name=eval_${AGENT}_${TASK}_s${SEED}${K_TAG} 2>&1 | grep -E "return=|K=|Error|Traceback"
     done
   done
 done
