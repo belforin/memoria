@@ -2825,6 +2825,26 @@ cambio de comportamiento); los directorios llevan el sufijo `_K12`. Job
 30913 (`bc_eval_dmc_K12`, QOS `regular`, 4 CPUs, 24 GB, sin fijar nodo).
 Resultados: pendientes.
 
+**Diagnósticos de CoinRun (lanzados 2026-10-05).** Dos preguntas abiertas
+del punto 2 de la lectura: si la brecha BC-hier vs. reduce_enc en test es
+real o ruido de evaluación, y si BC-hier se sobreajusta al final del
+entrenamiento.
+- **500 episodios por split** (job 30914, `bc_eval_procgen_500ep`), época
+  50, mismos 6 snapshots: el error estándar por evaluación baja de ~0,4 a
+  ~0,18. Los niveles siguen sin fijarse (`eval_bct.py` de Benjamín sin
+  modificar).
+- **Curvas por época** (job 30915, `bc_eval_procgen_curve`), épocas 10, 20,
+  30, 40 (pasos 156.250-625.000), 100 episodios por split; la época 50 es la
+  evaluación ya hecha. Es diagnóstico: Benjamín reporta solo la época 50.
+
+`eval_bc_procgen.sbatch` acepta ahora varios pasos en `STEP` y un sufijo
+`RUN_TAG` para los directorios de salida. `eval_bct.py` sobrescribe
+`evaluate_bct.csv` junto al snapshot en cada corrida (y estos dos jobs
+escriben el mismo archivo), así que el registro de resultados son los logs
+de `slurm_bc/logs/`. Los CSV de la evaluación original (época 50, 100
+episodios) quedaron copiados como `evaluate_bct_ep50_100eps.csv`. Ambos
+jobs: QOS `regular`, 4 CPUs, 24 GB, sin fijar nodo. Resultados: pendientes.
+
 ## Resumen de próximos pasos concretos
 
 1. [x] Igualar parámetros DT vs HDT (Etapa 0) y documentar la tabla de config.
@@ -2995,8 +3015,9 @@ Resultados: pendientes.
    entre semillas, sobre todo el uso del rtg en CoinRun (§4.5.5 punto 5).
 19. [ ] Opcional: saliencia espacial en CoinRun (parches difuminados sobre
    el frame, como Benjamín) para figuras cualitativas.
-20. [ ] Comparar contra los números reales de Benjamín (§0.1). Bloqueado
-   hasta tener su informe o tesis con las tablas.
+20. [x] Comparar contra los números reales de Benjamín (§0.1). Desbloqueado
+   con su tesis (§7.6); la comparación se hizo en la etapa BC, sobre sus
+   mismas tareas y pipeline (§7.10). Su tesis no tiene números de D4RL.
 21. [ ] Informe final consolidado: tablas D4RL y CoinRun, videos,
    interpretabilidad.
 22. [ ] Opcional: evaluar CoinRun con varios `rand_seed` de evaluación
@@ -3005,7 +3026,7 @@ Resultados: pendientes.
    diferencia DT vs. HDT en val (§2.10).
 23. [x] **Etapa BC sin R (§7).** Opción `use_rtg: false` en DT/HDT, relleno
    de episodios cortos, muestreo con temperatura en la eval, con tests (§7.3).
-24. [ ] CoinRun BC-uni/BC-hier con hparams y nº de params de Benjamín
+24. [x] *(Reemplazado por el punto 31.)* CoinRun BC-uni/BC-hier con hparams y nº de params de Benjamín
    (~4,16M/~4,19M sin IMPALA), 5 semillas por topología (§7.1). Configs y
    embeddings precalculados listos y verificados (§7.3, §7.4); 10 corridas
    lanzadas en A40 (jobs 30561-30570) y **canceladas**: se rehacen dentro
@@ -3014,9 +3035,12 @@ Resultados: pendientes.
    DMC de Benjamín o en ambos (§7.0). Respuesta: mismas tareas, datos y
    entornos que Benjamín, como plug-and-play de otro modelo en su pipeline
    (§7.5).
-26. [ ] Re-entrenar y evaluar sin R en el benchmark propioceptivo elegido.
+26. [x] Re-entrenar y evaluar sin R en el benchmark propioceptivo elegido
+   (DMC de Benjamín). Cubierto por el punto 31 (§7.10).
 27. [ ] Varianza de evaluación en CoinRun: semillas de entrenamiento ×
-   `rand_seed` de evaluación (reemplaza el punto 22).
+   `rand_seed` de evaluación (reemplaza el punto 22). En curso con 500
+   episodios por split en lugar de varios `rand_seed`, porque el
+   `eval_bct.py` de Benjamín no lo fija (job 30914, §7.10).
 28. [ ] Interpretabilidad sobre los modelos BC (reemplaza los puntos 17-19
    para la etapa nueva).
 29. [x] Leer la tesis de Benjamín: configuración CoinRun reportada, variante
@@ -3031,3 +3055,5 @@ Resultados: pendientes.
    en test); DMC no comparable directamente (desfase + ventana).
 32. [ ] Re-evaluación DMC con K = 12 (job 30913, §7.10) para aislar el
    efecto del largo de ventana frente a los números de Benjamín.
+33. [ ] Curvas por época en CoinRun (épocas 10-50, job 30915, §7.10): ver si
+   BC-hier se sobreajusta al final, como explicación de su test más bajo.
