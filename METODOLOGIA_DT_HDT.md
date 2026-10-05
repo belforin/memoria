@@ -2699,6 +2699,132 @@ respetar la regla de 24 h por job: cheetah s3 BC-uni se movió ahí (job 30639
 los 76 min); queda como respaldo si el entorno de Benjamín cambiara durante
 las corridas.
 
+**Ajuste de recursos (2026-10-02):** las 5 corridas BC-uni ya terminadas
+usaron en promedio ~1,3 CPUs y ~4-5 GB de RAM (sacct AveCPU/MaxRSS; el smoke
+de CoinRun llegó a ~18 GB). Con `--cpus-per-task=16`, `hydra` (36 CPUs
+configuradas, única con Titan RTX) solo admite 2 corridas a la vez, así que
+la cola quedaba limitada por CPU y no por la QOS. Se bajaron los 14 jobs
+pendientes a 6 CPUs y 48 GB (caben 5 en `hydra`), y la corrida BC-hier
+cheetah s1 (job 30659) pasó al cupo `long` (`ialab-low-unlimit`) con 4 CPUs,
+que eran las libres en `hydra`. Corre a 9,5-9,8 pasos/s, igual que los 9,9
+medidos en §7.9, así que el cargador sigue sin ser cuello de botella. Esto
+**no altera las corridas**: el código, la config, las semillas,
+`replay_buffer_num_workers=4` y el tipo de GPU son los mismos; solo cambia
+lo que se le pide a SLURM. BC-hier cheetah s2 (job 30660) se movió también
+a `long`, en espera para tomar el cupo cuando termine 30659.
+
+**Segundo ajuste de memoria (2026-10-03):** con 3 jobs `regular` + 1 `long`
+corriendo en `hydra` quedaba un cupo `regular` libre, pero BC-hier walker s3
+(30664) no entraba por memoria: `hydra` reserva 24 GB para el sistema
+(`MemSpecLimit=24576`), así que con 212 GB asignados quedan ~15,8 GB para
+jobs, y el cluster impone además un mínimo de 20 GB por GPU
+(`MemPerTres=gpu:20480`; `scontrol update` lo devuelve a ese valor). Se
+bajó `--mem` de los pendientes (DMC 30664-30667 a 15 GB, de modo que rige el
+mínimo de 20 GB; CoinRun 30668-30673 a 32 GB). Las DMC-hier usan ~3,4 GB
+(MaxRSS de 30659). Con esto no entra nada hoy, pero al terminar un job de
+`hydra` caben 2 en lugar de 1. BC-hier quadruped s1 (30665) pasó a `long`
+(`ialab-low-unlimit`) para tomar ese cupo cuando termine cheetah s2 (30660).
+
+**Estado al 2026-10-04 y lanzamiento de la evaluación DMC.** Las 18 corridas
+DMC terminaron (COMPLETED, 9 snapshots cada una hasta `snapshot_400000.pt`;
+BC-uni 16,7-20 h, BC-hier 11,5-20 h). CoinRun: BC-uni s1 terminó (781.250
+pasos, 10,4 h); BC-uni s2-s3 y BC-hier s1-s2 corriendo a ~21 pasos/s, BC-hier
+s3 (30673) en cola. La evaluación de las 18 DMC va en **un solo job serial**
+(job 30866, `eval_bc_dmc.sbatch` sin cambios: snapshot 400k, 100 episodios,
+semilla de evaluación = semilla de entrenamiento) en el cupo `long`
+(`ialab-low-unlimit`, 24 h, 4 CPUs, 24 GB, sin fijar nodo), para no
+competir con BC-hier s3 por los cupos `regular`; toma el cupo cuando termine
+BC-hier s1 (30671). La evaluación de CoinRun (`eval_bc_procgen.sbatch` sin
+cambios, época 50, 100 episodios por split) quedó en cola como un solo job
+(30877, QOS `regular`) con `--dependency=afterok:30669:30670:30671:30672:30673`:
+arranca solo cuando terminen bien las 5 corridas de CoinRun que siguen
+entrenando.
+
+### 7.10 Resultados BC y comparación con Benjamín (2026-10-05)
+
+Las 24 corridas terminaron (COMPLETED, exit 0): DMC BC-uni 16,7-20 h,
+BC-hier 11,5-20 h; CoinRun 10,3-11 h. Evaluaciones: DMC job 30866 (3,2 h),
+CoinRun job 30877 (19 min). Logs en `~/MaskDP_bc/slurm_bc/logs/`.
+
+**Lectura del log de `eval_return.py`:** la línea `raw_return=` es **solo el
+último episodio**; la media de los 100 episodios es la línea `return=`
+(`episode_return`). Las tablas usan `return=`.
+
+**DMC** (retorno en lazo cerrado, snapshot 400k, 100 episodios, K = 64;
+media ± desviación muestral sobre 3 semillas):
+
+| | cheetah_run | walker_run | quadruped_walk |
+|---|---|---|---|
+| BC-uni | 780,2 ± 10,5 | 761,6 ± 0,8 | 918,6 ± 3,9 |
+| BC-hier | 784,4 ± 5,5 | 766,4 ± 2,6 | 917,2 ± 1,1 |
+| Benjamín unistream (sin aum.) | 685,7 ± 83,6 | 470,3 ± 126,9 | 922,8 ± 49,3 |
+| Benjamín reduce_enc (sin aum.) | 428,8 ± 372,6 | 452,4 ± 278,7 | 900,8 ± 47,5 |
+
+Por semilla (s1/s2/s3): BC-uni cheetah 788,7/768,4/783,4, walker
+762,4/761,5/760,8, quadruped 920,0/914,2/921,7; BC-hier cheetah
+778,5/785,3/789,3, walker 763,8/769,1/766,3, quadruped 918,4/917,1/916,1.
+
+**CoinRun** (época 50, 100 episodios por split, muestreo con temperatura 1,0;
+retorno bruto, 10 = éxito):
+
+| | Train | Val | Test |
+|---|---|---|---|
+| BC-uni | 9,20 ± 0,26 | 8,20 ± 0,52 | 8,20 ± 0,26 |
+| BC-hier | 9,30 ± 0,17 | 7,73 ± 0,21 | 7,97 ± 0,32 |
+| Benjamín unistream | 9,07 ± 0,12 | – | 8,07 ± 0,64 |
+| Benjamín reduce_enc | 9,47 ± 0,50 | – | 8,93 ± 0,31 |
+
+Por semilla (train/val/test): BC-uni 8,9/8,5/8,4, 9,4/7,6/7,9, 9,3/8,5/8,3;
+BC-hier 9,2/7,5/8,2, 9,5/7,9/8,1, 9,2/7,8/7,6.
+
+**Lectura:**
+1. BC-uni vs. BC-hier: empatados en DMC y CoinRun. En CoinRun test la
+   diferencia (8,20 vs. 7,97) es menor que el error estándar por evaluación
+   (std por episodio ~4 / √100 ≈ 0,4), al que se suma que `eval_bct.py` no
+   fija `rand_seed` (§7.8 punto 2).
+2. CoinRun **es comparable de igual a igual** con Benjamín: mismo
+   `eval_bct.py`, ventana completa K = 16, sin desfase. BC-uni reproduce su
+   unistream (test 8,20 vs. 8,07). BC-hier queda ~1 punto por debajo de su
+   reduce_enc en test (7,97 vs. 8,93): la ventaja de generalización de su
+   jerárquico no aparece en el BC jerárquico.
+3. DMC **no es comparable de igual a igual** con sus números. La ventaja de
+   BC en cheetah y walker (~780 vs. ~690/430; ~765 vs. ~470/450) mezcla tres
+   factores que no se pueden separar con estas corridas:
+   - **el modelo** (BC autoregresivo vs. su modelo enmascarado), que es lo
+     que se quiere medir;
+   - **el desfase de un paso de su evaluación** (§7.8 punto 1): sus colas de
+     estados y acciones tienen el mismo largo (`deque(maxlen=T_cond)`), así
+     que tras el calentamiento cada estado `s_k` queda junto a `a_{k−1}`
+     (alineación que el modelo nunca vio al entrenar) y la acción se lee de
+     la posición `T_cond`, un paso futuro con el estado enmascarado. Sus
+     retornos están probablemente subestimados (prueba de 2 episodios, no
+     concluyente: unistream 740 → 817, reduce_enc 759 → 771). Nuestro
+     `BCAREvalAgent` guarda K estados y K−1 acciones y lee la posición del
+     estado actual, sin desfase;
+   - **el largo de la ventana de evaluación**: `T_cond` es cuántos pasos de
+     historia recibe el modelo en cada paso del lazo cerrado. Sus scripts de
+     retorno DMC usan `T_cond=12` (aunque entrenó con contexto 64); nosotros
+     K = 64, la ventana completa, como su regla para la evaluación BCT
+     (§7.6). Se eligió 64 porque `T_cond=12` era un parámetro de la
+     evaluación de su modelo enmascarado, no de la tarea.
+   Como se decidió no re-evaluar sus snapshots (§7.8), el desfase queda sin
+   cuantificar. El efecto de la ventana sí se puede aislar en nuestro lado.
+   Lo que sí vale sin reservas en DMC es la comparación interna BC-uni vs.
+   BC-hier.
+4. quadruped_walk está saturado (~918 en todos, también en Benjamín).
+
+**Re-evaluación DMC con K = 12 (lanzada 2026-10-05).** Para igualar el
+largo de ventana de Benjamín y dejar el desfase como única diferencia de
+protocolo, se re-evalúan los 18 snapshots DMC con `agent.K=12` (el mismo
+`eval_return.py`, snapshot 400k, 100 episodios, mismas semillas). Es
+válido sin reentrenar: el modelo es causal y con K < traj_length solo usa
+las primeras K posiciones, el mismo caso que el historial incompleto del
+calentamiento (cubierto por `test_bc_ar.py`, §7.7). `eval_bc_dmc.sbatch`
+acepta ahora la variable opcional `EVAL_K` (vacía = ventana completa, sin
+cambio de comportamiento); los directorios llevan el sufijo `_K12`. Job
+30913 (`bc_eval_dmc_K12`, QOS `regular`, 4 CPUs, 24 GB, sin fijar nodo).
+Resultados: pendientes.
+
 ## Resumen de próximos pasos concretos
 
 1. [x] Igualar parámetros DT vs HDT (Etapa 0) y documentar la tabla de config.
@@ -2898,6 +3024,10 @@ las corridas.
    resultados (§7.5). Hecho en §7.6.
 30. [x] Rama `bc-plugandplay`: tests de `agent/bc_ar.py`, configs, entorno
    conda de Benjamín, smoke tests en DMC y CoinRun (§7.7, §7.9).
-31. [ ] 24 corridas BC en el pipeline de Benjamín (18 DMC + 6 CoinRun, 3
-   semillas), lanzadas el 2026-10-01 (§7.9). Al terminar: evaluar con
-   `slurm_bc/eval_bc_{dmc,procgen}.sbatch` y comparar contra §7.6.
+31. [x] 24 corridas BC en el pipeline de Benjamín (18 DMC + 6 CoinRun, 3
+   semillas), lanzadas el 2026-10-01 (§7.9), evaluadas y comparadas contra
+   §7.6 (§7.10, 2026-10-05). BC-uni ≈ BC-hier en ambos benchmarks; CoinRun
+   comparable con Benjamín (BC-uni ≈ su unistream, BC-hier < su reduce_enc
+   en test); DMC no comparable directamente (desfase + ventana).
+32. [ ] Re-evaluación DMC con K = 12 (job 30913, §7.10) para aislar el
+   efecto del largo de ventana frente a los números de Benjamín.
