@@ -2904,6 +2904,168 @@ Lectura:
    las variaciones entre épocas son menores que el error estándar de
    ~0,4 con 100 episodios. La época 50 es representativa.
 
+### 7.11 Interpretabilidad de BC en CoinRun con el protocolo de Benjamín (2026-10-06)
+
+**Alcance (decisión del usuario, 2026-10-06): AttAttr y SARFA, solo en
+CoinRun.** Benjamín hizo interpretabilidad sobre sus modelos enmascarados (su
+§3.5 y §4.3), pero solo en CoinRun: unistream vs. reduce_enc, 3 semillas,
+nada en DMC. Se replica ese protocolo sobre BC-uni/BC-hier para poder comparar
+contra sus números.
+
+**Su pipeline** (`/home/bmancilla/archive/MaskDP/MaskDP_public`, documentado
+en su `SARFA_ATTATTR_METHODOLOGY.md`; las ramas `upstream/hier-procgen-attattr`
+y `-sarfa` son versiones anteriores):
+1. Grabación (`analysis/eval_bct_levels.py`): 50 niveles de test aleatorios
+   desde 250 (`--level-seed 1`, los mismos para todos los modelos), un
+   episodio por nivel, **muestreo con temperatura 1,0** (no argmax), cada
+   modelo sobre sus propias trayectorias.
+2. AttAttr (`run_attn_attr_batch.py`) en **todos** los pasos grabados
+   (~3000-3300 estados por semilla), m = 20, objetivo = logit de la acción
+   argmax del modelo, sobre las 2 capas × 4 cabezas de su decodificador
+   (idéntico entre topologías).
+3. SARFA (`eval_sarfa.py`, `phase=evaluate`) sobre 20 estados por episodio de
+   los ya atribuidos (unión 1:1 por `index.csv`): saliencia espacial (grilla
+   de oclusión d = 4, radio 3, blur 3) y temporal (blur del frame completo
+   en cada posición de la ventana), fórmula original de Puri et al.
+4. Métricas: campo receptivo (`receptive_field_diagnostics`: normaliza por el
+   máximo del bloque, descarta atribución negativa, excluye la diagonal),
+   mediana sobre estados por (capa, cabeza), media sobre cabezas, ponderado
+   por la fracción de masa |attr| de cada capa por semilla; Herfindahl de la
+   masa sumada sobre capas y cabezas; SARFA: entropía espacial, concentración
+   top-5/10/20% y recencia temporal.
+
+**Sus resultados (referencia):** campo receptivo ponderado jerárquica 3,22 ±
+0,32 vs. unistream 2,57 ± 0,22 (las 3 semillas separadas, la única métrica que
+distingue a las topologías); por capa (RF, peso de masa): jer. 3,37/0,61 y
+2,99/0,39, uni 2,15/0,73 y 3,75/0,27; Herfindahl 0,062 ± 0,008 vs. 0,071 ±
+0,011; SARFA entropía 3,721 vs. 3,752, top-5% 0,608 vs. 0,596, top-10% 0,790
+vs. 0,785, top-20% 0,919 vs. 0,917 (diferencias dentro de la dispersión entre
+semillas).
+
+**Port a BC (rama `bc-plugandplay`, worktree `~/MaskDP_bc`):**
+- Copiados tal cual de `MaskDP_public`: `agent/modules/attention.py` (solo
+  agrega los argumentos opcionales `tmp_att`/`return_att`; el forward por
+  defecto no cambia), `analysis/{perturbation, trajectory_recorder,
+  compare_saliency, receptive_field, select_qualitative_states,
+  sarfa_entropy_summary, sarfa_topk_concentration, sarfa_temporal_recency}.py`,
+  `third_party/sarfa_saliency.py`, `eval_sarfa.{py,yaml}` y
+  `analysis/eval_bct_levels.py`. En los dos últimos solo cambia la clase del
+  agente (`BCTEvalAgentMultimodal` → `BCAREvalAgent`).
+- `agent/bc_ar.py`: `_Stack`/`BCARModel.forward` aceptan un gancho opcional de
+  atención (capturar o reemplazar la atención de una capa);
+  `BCARModel.attn_stacks()`; en `BCAREvalAgent`, `logits_for(obs_override,
+  override_index)` (la interfaz de su SARFA, con el IMPALA aplicado frame por
+  frame) y `_forward_for_attr`.
+- Nuevo `analysis/bc_attn_attr.py`: misma matemática que su `attn_attr.py`,
+  mismo esquema de salida (`.npz` por estado, `index.csv`, `manifest.json`).
+  Las m interpolaciones van en un solo batch en vez de un bucle (mismo
+  resultado, verificado).
+- Nuevo `analysis/bc_attn_attr_metrics.py`: sus métricas con su agregación,
+  reusando `receptive_field.py` sin cambios.
+- Nuevo `analysis/bc_attn_attr_m_convergence.py`: réplica de su Tabla 3.10.
+- Lanzador `slurm_bc/interp_bc_procgen.sbatch` (grabación → AttAttr → SARFA
+  por agente y semilla).
+
+**Dónde se atribuye (diferencia de arquitectura).** Nuestros modelos no tienen
+decodificador: a_t sale del token s_t a la salida del stack conjunto causal.
+Se atribuye sobre **todas** las capas de atención y se reportan tres
+conjuntos:
+- `last_joint`: la última capa conjunta, la más cercana al logit en ambas
+  topologías y con matriz del mismo tamaño. Es la comparación directa entre
+  BC-uni y BC-hier, el análogo de su decodificador. En esa capa solo la fila
+  del token objetivo tiene atribución (verificado), porque la máscara es causal.
+- `joint`: todas las capas conjuntas (BC-uni 5, BC-hier 1).
+- `all`: todas las capas del modelo; en BC-hier suma los stacks por
+  modalidad (2 obs + 2 act), con su paso temporal propio.
+El token objetivo es s_{n_s−1}, el análogo de su a_0* enmascarado. Sin
+tokens de máscara, la opción `include_mask` de su campo receptivo no aplica.
+
+**Tests** (`test_bc_ar.py`, sección 6, con `srun`; todos OK):
+- `logits_for` reproduce el forward sobre píxeles, también con un frame
+  reemplazado, y no modifica los buffers.
+- En cada capa de los dos modelos, capturar la atención no cambia la
+  predicción y reinyectarla la reproduce.
+- El gradiente integrado en batch coincide con el bucle de Benjamín.
+- Completitud: Σ attr → F(A) − F(0) al crecer m (error de 4,7e-3 con m = 50
+  a 3,8e-4 con m = 1000, en uni). Con m chico puede quedar lejos, porque F
+  cambia bruscamente cerca de α = 0. Benjamín fijó m = 20 por estabilidad
+  del ranking, no por completitud.
+
+**Piloto** (job 31137, 2 niveles, semilla 1, 3 min): corre de punta a punta
+sin errores; AttAttr ≈ 0,3 s por estado y SARFA ≈ 0,9 s por estado.
+Convergencia en m (20 estados): Spearman contra m = 50 de 0,998 (uni) y
+0,994 (hier) con m = 20, coincidencia top-10 de 9,9/10, igual que su Tabla
+3.10. No hubo estados con p_max < 0,2 en el piloto. Los números de las
+métricas del piloto no se interpretan (2 niveles).
+
+**Corrida completa lanzada (2026-10-06):** jobs 31139 (BC-uni) y 31140
+(BC-hier), 50 niveles × 3 semillas cada uno, QOS `regular`, sin fijar nodo.
+Salida en `~/models/bc_plugandplay/interp_procgen/`. Resultados: pendientes.
+
+### 7.12 Arquitectura BC frente a DT y comparabilidad con Benjamín (2026-10-06)
+
+Preguntas del usuario: si el paso de DT a BC fue riguroso, qué cambió además
+del rtg, si nuestro BC sigue la estructura de algún paper, y si nuestro BC
+podría ganarle a Benjamín por tener más capas o embeddings.
+
+**Qué cambió de DT/HDT (`main`, D4RL) a BC-uni/BC-hier (`bc-plugandplay`):**
+
+| | DT/HDT | BC-uni/BC-hier |
+|---|---|---|
+| Tokens por paso | 3 (R, s, a) | 2 (s, a) |
+| Posición | embedding aprendido del timestep del episodio | embedding aprendido de la posición en la ventana (su buffer no entrega el timestep) |
+| Normalización de observaciones | sí (§2.8) | no (Benjamín tampoco) |
+| Hiperparámetros | los del paper de DT (128 dim, 3 capas, contexto 20) | los de Benjamín (§7.6) |
+| Datos y evaluación | D4RL, `eval_dt.py` | sus datos, `eval_return.py`/`eval_bct.py` |
+
+Iguales: a_t se predice desde s_t con máscara causal, los mismos `Block`, la
+misma cabeza de acción y la misma estructura jerárquica (BC-hier = HDT sin el
+stream de return: un stack causal por modalidad, cada uno con su posición, y
+después capas conjuntas de auto-atención sobre (s, a) intercalados).
+**El cambio no es una ablación de un solo factor**: no se puede atribuir al
+rtg una diferencia entre los DT de D4RL y los BC (además, son tareas
+distintas). La comparación controlada es BC vs. MaskDP de Benjamín.
+
+**Relación con la literatura:**
+- BC-uni es casi la línea base GPT del paper de MaskDP (Liu et al. 2022;
+  `agent/gpt.py` del repo de Benjamín): transformer causal sobre (s, a)
+  intercalados, a_t desde s_t. Diferencias: GPT además predice el estado
+  siguiente desde el token de acción (loss extra) y usa posición sinusoidal
+  fija. Conceptualmente también es "DT sin token de retorno"; falta verificar
+  si el paper de DT reporta esa variante (su %BC es un MLP).
+- BC-hier no tiene equivalente publicado. Ojo con el nombre: "Hierarchical
+  Decision Transformer" (Correia y Alexandre, 2022) es otra arquitectura
+  (un nivel alto que propone subobjetivos), no flujos separados por
+  modalidad. Conviene aclararlo en el informe o renombrar la nuestra.
+
+**¿Puede ganar nuestro BC por capacidad?** No por tamaño: la comparación está
+igualada por diseño.
+
+| | BC | Benjamín |
+|---|---|---|
+| Params entrenables (DMC) | uni 3,97M, hier 3,99M | unistream 4,09M, reduce_enc 4,16M (BC −3% / −4%) |
+| Bloques | uni 5; hier 2+2+1 | unistream 3 enc + 2 dec; reduce_enc 2+2 enc + 1 fusión + 2 dec |
+| Embedding, cabezas, contexto, lr, batch, pasos, dropout, WD | los suyos | — |
+| Datos, IMPALA congelado (proyección aleatoria), evaluación | los suyos, sin modificar | — |
+
+Diferencias que quedan, además del objetivo de entrenamiento (que es lo que
+se compara): (1) posición aprendida vs. su sinusoidal fija; (2) en DMC, el
+desfase de un paso de su evaluación (§7.8).
+- CoinRun (comparación limpia): BC no le gana (BC-uni ≈ unistream, BC-hier <
+  reduce_enc), así que ahí no hay señal de una ventaja de arquitectura a favor
+  de BC.
+- DMC: la ventaja de BC en cheetah y walker es sospechosa. La ventana ya se
+  descartó (K = 12, §7.10); lo más probable es su evaluación: en la prueba
+  corta de §7.8 su unistream pasó de 740 a 817 con la evaluación corregida
+  (2 episodios, una semilla), por encima de nuestro BC (~780).
+
+**Propuesto (pendiente de decisión del usuario):** (1) re-evaluar sus
+snapshots DMC con la evaluación corregida (scripts listos en
+`~/MaskDP_bc/reeval_ben/`, ~18 evaluaciones); esto revisaría la decisión de
+§7.8. (2) Opcional, según (1): reentrenar BC con posición sinusoidal fija
+para descartar el único factor de arquitectura que no es parte de la
+pregunta.
+
 ## Resumen de próximos pasos concretos
 
 1. [x] Igualar parámetros DT vs HDT (Etapa 0) y documentar la tabla de config.
@@ -3103,7 +3265,10 @@ Lectura:
    BC-hier empatan (test 8,29 vs. 8,36); la brecha con 100 episodios era
    ruido. BC-hier queda ~0,6 bajo el reduce_enc de Benjamín en test.
 28. [ ] Interpretabilidad sobre los modelos BC (reemplaza los puntos 17-19
-   para la etapa nueva).
+   para la etapa nueva). Solo CoinRun, protocolo de la tesis de Benjamín
+   (§7.11): port, tests y piloto hechos; corrida completa en curso (jobs
+   31139/31140). Falta: métricas sobre las 3 semillas y comparación con
+   su §4.3.
 29. [x] Leer la tesis de Benjamín: configuración CoinRun reportada, variante
    de referencia en DMC y CoinRun, tarea de quadruped y tablas de
    resultados (§7.5). Hecho en §7.6.
@@ -3122,3 +3287,12 @@ Lectura:
 33. [x] Curvas por época en CoinRun (épocas 10-50, job 30915, §7.10): ver si
    BC-hier se sobreajusta al final, como explicación de su test más bajo.
    No: las curvas son planas desde la época 10 en las dos topologías.
+34. [ ] **Decisión del usuario:** re-evaluar los snapshots DMC de Benjamín con
+   la evaluación corregida (§7.12, revisa la decisión de §7.8), para saber si
+   la ventaja de BC en cheetah/walker es del modelo o de su evaluación.
+35. [ ] Opcional, según el punto 34: BC con posición sinusoidal fija, para
+   descartar la única diferencia de arquitectura con Benjamín que no es parte
+   de la pregunta (§7.12).
+36. [ ] Informe: aclarar el nombre de la topología jerárquica frente a
+   "Hierarchical Decision Transformer" (Correia y Alexandre, 2022) y describir
+   BC-uni en relación con la línea base GPT de MaskDP (§7.12).
