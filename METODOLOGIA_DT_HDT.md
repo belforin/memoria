@@ -3000,7 +3000,78 @@ métricas del piloto no se interpretan (2 niveles).
 
 **Corrida completa lanzada (2026-10-06):** jobs 31139 (BC-uni) y 31140
 (BC-hier), 50 niveles × 3 semillas cada uno, QOS `regular`, sin fijar nodo.
-Salida en `~/models/bc_plugandplay/interp_procgen/`. Resultados: pendientes.
+Salida en `~/models/bc_plugandplay/interp_procgen/`.
+
+**Resultados (jobs 31139/31140, ~1 h cada uno, 0 errores; métricas
+2026-10-06).** Por semilla: 2592-3009 estados con AttAttr y 995-999 con SARFA
+(Benjamín: ~2850-3360 y ~995). En la grabación (50 niveles de test, muestreo
+T = 1) se ganan 40-43 de 50 niveles por modelo, en línea con el retorno de
+test de §7.10. Media ± desviación entre 3 semillas.
+
+*SARFA* (mismos scripts de Benjamín, sin cambios):
+
+| Métrica | BC-hier | BC-uni | ¿3 semillas separadas? | Benjamín jer. / uni |
+|---|---|---|---|---|
+| Entropía espacial (nats) | 3,804 ± 0,022 | 3,655 ± 0,024 | sí | 3,721 / 3,752 |
+| Concentración top-5% | 0,557 ± 0,006 | 0,599 ± 0,006 | sí | 0,608 / 0,596 |
+| Concentración top-10% | 0,752 ± 0,005 | 0,782 ± 0,005 | sí | 0,790 / 0,785 |
+| Concentración top-20% | 0,901 ± 0,002 | 0,916 ± 0,002 | sí | 0,919 / 0,917 |
+| Saliencia temporal en el frame actual | 0,434 ± 0,037 | 0,420 ± 0,050 | no | – |
+| Saliencia temporal 1 paso atrás | 0,137 ± 0,005 | 0,131 ± 0,011 | no | – |
+
+*AttAttr* (campo receptivo en pasos, mediana sobre estados, media sobre
+cabezas):
+
+| Conjunto de capas | BC-hier | BC-uni |
+|---|---|---|
+| Última capa conjunta (comparación directa) | 2,86 ± 0,03 | 4,39 ± 0,27 |
+| Todo el modelo, media simple de capas | 2,58 ± 0,02 | 3,01 ± 0,12 |
+| Todo el modelo, ponderado por masa | 2,30 ± 0,02 | 2,33 ± 0,07 |
+| Herfindahl, última capa conjunta | 0,182 ± 0,004 | 0,116 ± 0,008 |
+
+Por capa (campo receptivo / fracción de masa sobre el total del modelo):
+- BC-uni: joint0 1,55 / 0,53; joint1 2,61 / 0,17; joint2 3,06 / 0,13;
+  joint3 3,43 / 0,10; joint4 4,39 / 0,08.
+- BC-hier: obs0 1,31 / 0,32; obs1 3,75 / 0,14; act0 1,97 / 0,23;
+  act1 3,02 / 0,10; joint0 2,86 / 0,21.
+
+**Lectura:**
+1. **SARFA sí separa a las topologías en BC, al revés que en Benjamín.** En
+   las cuatro métricas espaciales, las 3 semillas de BC-hier quedan de un
+   lado y las de BC-uni del otro, con diferencias 5-7 veces la desviación
+   entre semillas. BC-hier tiene mapas de saliencia más difusos (más
+   entropía, menos masa en el top-k% de píxeles); BC-uni, más concentrados.
+   En Benjamín las diferencias caían dentro de la dispersión entre
+   semillas. La dispersión entre estados individuales sigue siendo un orden
+   de magnitud mayor (std por estado ~0,55-0,68 nats), así que es una
+   diferencia en la media, no en cada estado.
+2. **La saliencia temporal no distingue a las topologías:** las dos ponen
+   ~42-43% en el frame actual y ~13-14% en el anterior.
+3. **AttAttr: el campo receptivo ponderado por masa de todo el modelo es igual
+   en las dos topologías (2,30 vs. 2,33).** La métrica que en Benjamín
+   separaba a sus topologías (su decodificador, jer. 3,22 > uni 2,57) no
+   tiene un análogo exacto acá; en la comparación más cercana (última capa
+   conjunta) la dirección es la contraria: BC-uni mira más lejos (4,39 vs.
+   2,86). No es comparable de igual a igual: en BC-uni esa capa es la quinta
+   de un stack conjunto; en BC-hier, la primera capa conjunta, después de los
+   stacks por modalidad.
+4. **El reparto por profundidad se parece al de Benjamín en unistream:** las
+   primeras capas concentran la masa con alcance corto (BC-uni joint0: 53% de
+   la masa, 1,55 pasos; BC-hier obs0: 32%, 1,31 pasos) y las capas profundas
+   tienen alcance largo y poca masa. En BC-uni el alcance crece de forma
+   monótona con la profundidad.
+5. **Los valores absolutos no se comparan con los de Benjamín**: su
+   decodificador es bidireccional, incluye tokens de máscara y siempre tiene
+   matrices de 2K × 2K. Nuestras capas son causales y de 2n_s × 2n_s. El
+   Herfindahl depende del tamaño de la matriz, así que solo se compara entre
+   nuestras dos topologías en la misma capa (BC-hier más concentrado, 0,182
+   vs. 0,116). Las métricas de SARFA sí son comparables en absoluto (mismos
+   frames, misma grilla, mismos scripts).
+
+Archivos: `interp_procgen/metrics/attattr_{per_seed.csv,per_seed.json,summary.txt}`
+y `interp_procgen/sarfa/sarfa_*.csv` (+ `.npz` por estado para figuras). Las
+figuras (violines, bipartitos, secuencias de saliencia) no se generaron; sus
+scripts de render están en `MaskDP_public/analysis/render/`.
 
 ### 7.12 Arquitectura BC frente a DT y comparabilidad con Benjamín (2026-10-06)
 
@@ -3058,6 +3129,33 @@ desfase de un paso de su evaluación (§7.8).
   descartó (K = 12, §7.10); lo más probable es su evaluación: en la prueba
   corta de §7.8 su unistream pasó de 740 a 817 con la evaluación corregida
   (2 episodios, una semilla), por encima de nuestro BC (~780).
+
+**Profundidad en serie: igualar parámetros no iguala profundidad
+(limitación).** Las estructuras 5 (uni) y 2+2+1 (hier) imitan a Benjamín:
+su unistream tiene 3 enc + 2 dec = 5 bloques sobre la secuencia conjunta, y su
+`reduce_enc`, 2 enc por modalidad + 1 fusión. Sus 2 capas de decoder
+(reconstrucción de tokens enmascarados) no tienen rol en BC autoregresivo. A
+`n_embd=256` todos los bloques tienen el mismo tamaño, así que 5 = 2+2+1
+iguala el presupuesto de parámetros. Pero:
+- En BC-uni un token pasa por **5 capas en serie** y estados y acciones
+  interactúan en las 5.
+- En BC-hier los stacks por modalidad corren **en paralelo**: 2 capas de su
+  modalidad + 1 conjunta = **3 en serie**, y estados y acciones interactúan
+  en **una sola** capa.
+- El `reduce_enc` de Benjamín tiene 2 enc + 1 fusión + 2 dec = **5 en serie**,
+  con interacción entre modalidades en fusión y decoder. Sus encoders por
+  modalidad son más angostos (`enc_n_embd=128`), así que reparte los
+  parámetros de otra forma.
+
+Consecuencias: (a) BC-hier tiene menos profundidad efectiva y menos capas de
+mezcla que BC-uni y que `reduce_enc`; podría explicar en parte por qué BC-hier
+no replica la ventaja de generalización de `reduce_enc` en CoinRun (test 8,36
+vs. 8,93, §7.10). (b) En AttAttr (§7.11), la "última capa conjunta" no es
+equivalente entre topologías: es la quinta capa de mezcla en BC-uni y la
+primera y única en BC-hier. Variantes posibles para aislar el factor, no
+planificadas: BC-hier 2+2+3 (5 capas en serie, ~40% más parámetros) o
+stacks por modalidad más angostos, como `reduce_enc`, para mantener la
+paridad.
 
 **Propuesto (pendiente de decisión del usuario):** (1) re-evaluar sus
 snapshots DMC con la evaluación corregida (scripts listos en
@@ -3264,11 +3362,12 @@ pregunta.
    `eval_bct.py` de Benjamín no lo fija (job 30914, §7.10): BC-uni y
    BC-hier empatan (test 8,29 vs. 8,36); la brecha con 100 episodios era
    ruido. BC-hier queda ~0,6 bajo el reduce_enc de Benjamín en test.
-28. [ ] Interpretabilidad sobre los modelos BC (reemplaza los puntos 17-19
+28. [x] Interpretabilidad sobre los modelos BC (reemplaza los puntos 17-19
    para la etapa nueva). Solo CoinRun, protocolo de la tesis de Benjamín
-   (§7.11): port, tests y piloto hechos; corrida completa en curso (jobs
-   31139/31140). Falta: métricas sobre las 3 semillas y comparación con
-   su §4.3.
+   (§7.11): hecho (jobs 31139/31140). SARFA espacial separa a las
+   topologías (BC-hier más difuso), al revés que en Benjamín; el campo
+   receptivo ponderado de todo el modelo es igual (2,30 vs. 2,33). Falta,
+   opcional: figuras cualitativas.
 29. [x] Leer la tesis de Benjamín: configuración CoinRun reportada, variante
    de referencia en DMC y CoinRun, tarea de quadruped y tablas de
    resultados (§7.5). Hecho en §7.6.
