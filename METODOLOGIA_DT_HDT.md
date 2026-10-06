@@ -2823,7 +2823,27 @@ calentamiento (cubierto por `test_bc_ar.py`, §7.7). `eval_bc_dmc.sbatch`
 acepta ahora la variable opcional `EVAL_K` (vacía = ventana completa, sin
 cambio de comportamiento); los directorios llevan el sufijo `_K12`. Job
 30913 (`bc_eval_dmc_K12`, QOS `regular`, 4 CPUs, 24 GB, sin fijar nodo).
-Resultados: pendientes.
+
+*Resultados (job 30913, 3,2 h, 2026-10-06):*
+
+| | cheetah_run | walker_run | quadruped_walk |
+|---|---|---|---|
+| BC-uni K = 12 | 779,8 ± 12,5 | 763,3 ± 0,8 | 924,8 ± 5,7 |
+| BC-uni K = 64 | 780,2 ± 10,5 | 761,6 ± 0,8 | 918,6 ± 3,9 |
+| BC-hier K = 12 | 793,2 ± 3,9 | 766,9 ± 3,7 | 910,9 ± 11,8 |
+| BC-hier K = 64 | 784,4 ± 5,5 | 766,4 ± 2,6 | 917,2 ± 1,1 |
+
+Por semilla (s1/s2/s3, K = 12): BC-uni cheetah 784,2/765,7/789,5, walker
+763,5/764,0/762,4, quadruped 929,2/918,4/926,8; BC-hier cheetah
+795,4/788,7/795,6, walker 767,1/770,5/763,2, quadruped 908,1/900,6/923,8.
+
+Lectura: **el largo de ventana no cambia el retorno** (todas las
+diferencias K = 12 vs. K = 64 son ≤ 9 puntos, del orden de la desviación
+entre semillas). Con la misma ventana que Benjamín, la ventaja de BC en
+cheetah (~780-790 vs. 686/429) y walker (~765 vs. 470/452) se mantiene
+entera. La diferencia de protocolo que queda es el desfase de un paso de su
+evaluación (§7.8), que no se cuantificó, así que esa ventaja sigue sin
+poder atribuirse solo al modelo. BC-uni vs. BC-hier: siguen empatados.
 
 **Diagnósticos de CoinRun (lanzados 2026-10-05).** Dos preguntas abiertas
 del punto 2 de la lectura: si la brecha BC-hier vs. reduce_enc en test es
@@ -2843,7 +2863,46 @@ entrenamiento.
 escriben el mismo archivo), así que el registro de resultados son los logs
 de `slurm_bc/logs/`. Los CSV de la evaluación original (época 50, 100
 episodios) quedaron copiados como `evaluate_bct_ep50_100eps.csv`. Ambos
-jobs: QOS `regular`, 4 CPUs, 24 GB, sin fijar nodo. Resultados: pendientes.
+jobs: QOS `regular`, 4 CPUs, 24 GB, sin fijar nodo.
+
+*Resultados 500 episodios (job 30914, 1,2 h, 2026-10-06)*, época 50,
+retorno bruto, media ± desviación sobre 3 semillas:
+
+| | Train | Val | Test |
+|---|---|---|---|
+| BC-uni (500 ep.) | 9,35 ± 0,07 | 7,82 ± 0,17 | 8,29 ± 0,06 |
+| BC-hier (500 ep.) | 9,35 ± 0,06 | 7,83 ± 0,19 | 8,36 ± 0,29 |
+| BC-uni (100 ep., arriba) | 9,20 ± 0,26 | 8,20 ± 0,52 | 8,20 ± 0,26 |
+| BC-hier (100 ep., arriba) | 9,30 ± 0,17 | 7,73 ± 0,21 | 7,97 ± 0,32 |
+| Benjamín reduce_enc | 9,47 ± 0,50 | – | 8,93 ± 0,31 |
+
+Por semilla (train/val/test): BC-uni 9,36/8,00/8,22, 9,28/7,80/8,34,
+9,42/7,66/8,32; BC-hier 9,34/7,64/8,54, 9,30/7,84/8,52, 9,42/8,02/8,02.
+
+*Curvas por época (job 30915, 1,2 h, 2026-10-06)*, 100 episodios por split:
+
+| Época (paso) | BC-uni train/val/test | BC-hier train/val/test |
+|---|---|---|
+| 10 (156.250) | 9,37 / 7,50 / 8,53 | 9,43 / 7,80 / 8,43 |
+| 20 (312.500) | 9,47 / 7,63 / 8,13 | 8,97 / 8,23 / 8,30 |
+| 30 (468.750) | 9,70 / 8,07 / 8,47 | 9,60 / 7,80 / 8,57 |
+| 40 (625.000) | 9,43 / 7,47 / 8,37 | 9,47 / 7,87 / 8,23 |
+| 50 (781.250, 500 ep.) | 9,35 / 7,82 / 8,29 | 9,35 / 7,83 / 8,36 |
+
+Lectura:
+1. **La brecha BC-hier < BC-uni en test con 100 episodios era ruido de
+   evaluación.** Con 500 episodios los dos quedan iguales en las 3 splits
+   (test 8,29 vs. 8,36).
+2. Frente a Benjamín, BC-uni sigue igualando su unistream (8,29 vs. 8,07).
+   BC-hier queda ~0,6 por debajo de su reduce_enc en test (8,36 vs. 8,93),
+   la mitad de la brecha que se veía con 100 episodios. Sus números también
+   vienen de una sola evaluación por semilla con niveles sin fijar, así que
+   parte de esa brecha puede ser ruido de su lado; con lo que hay no se
+   puede afirmar que su jerárquico generalice mejor que BC-hier.
+3. **No hay sobreajuste al final del entrenamiento.** Las curvas son planas
+   desde la época 10 en las dos topologías (test 8,1-8,6, val 7,5-8,2);
+   las variaciones entre épocas son menores que el error estándar de
+   ~0,4 con 100 episodios. La época 50 es representativa.
 
 ## Resumen de próximos pasos concretos
 
@@ -3037,10 +3096,12 @@ jobs: QOS `regular`, 4 CPUs, 24 GB, sin fijar nodo. Resultados: pendientes.
    (§7.5).
 26. [x] Re-entrenar y evaluar sin R en el benchmark propioceptivo elegido
    (DMC de Benjamín). Cubierto por el punto 31 (§7.10).
-27. [ ] Varianza de evaluación en CoinRun: semillas de entrenamiento ×
-   `rand_seed` de evaluación (reemplaza el punto 22). En curso con 500
+27. [x] Varianza de evaluación en CoinRun: semillas de entrenamiento ×
+   `rand_seed` de evaluación (reemplaza el punto 22). Hecho con 500
    episodios por split en lugar de varios `rand_seed`, porque el
-   `eval_bct.py` de Benjamín no lo fija (job 30914, §7.10).
+   `eval_bct.py` de Benjamín no lo fija (job 30914, §7.10): BC-uni y
+   BC-hier empatan (test 8,29 vs. 8,36); la brecha con 100 episodios era
+   ruido. BC-hier queda ~0,6 bajo el reduce_enc de Benjamín en test.
 28. [ ] Interpretabilidad sobre los modelos BC (reemplaza los puntos 17-19
    para la etapa nueva).
 29. [x] Leer la tesis de Benjamín: configuración CoinRun reportada, variante
@@ -3053,7 +3114,11 @@ jobs: QOS `regular`, 4 CPUs, 24 GB, sin fijar nodo. Resultados: pendientes.
    §7.6 (§7.10, 2026-10-05). BC-uni ≈ BC-hier en ambos benchmarks; CoinRun
    comparable con Benjamín (BC-uni ≈ su unistream, BC-hier < su reduce_enc
    en test); DMC no comparable directamente (desfase + ventana).
-32. [ ] Re-evaluación DMC con K = 12 (job 30913, §7.10) para aislar el
-   efecto del largo de ventana frente a los números de Benjamín.
-33. [ ] Curvas por época en CoinRun (épocas 10-50, job 30915, §7.10): ver si
+32. [x] Re-evaluación DMC con K = 12 (job 30913, §7.10) para aislar el
+   efecto del largo de ventana frente a los números de Benjamín. El largo
+   de ventana no cambia el retorno (≤ 9 puntos); la ventaja frente a
+   Benjamín en cheetah/walker se mantiene y solo queda sin cuantificar el
+   desfase de su evaluación.
+33. [x] Curvas por época en CoinRun (épocas 10-50, job 30915, §7.10): ver si
    BC-hier se sobreajusta al final, como explicación de su test más bajo.
+   No: las curvas son planas desde la época 10 en las dos topologías.
