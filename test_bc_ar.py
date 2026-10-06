@@ -148,6 +148,82 @@ for name in ["bc_uni", "bc_hier"]:
         dev = 100 * (n - ref[name][obs_dim]) / ref[name][obs_dim]
         check(f"{name} DMC obs={obs_dim}: {n:,} params ({dev:+.1f}% vs Benjamin)", abs(dev) < 6)
 
+# 6. interpretabilidad (eval_sarfa.py / analysis/bc_attn_attr.py): ganchos de
+# atencion, logits_for y gradiente integrado en batch
+if os.path.exists(IMPALA_CKPT):
+    from analysis.bc_attn_attr import attn_attr_layer
+    from analysis.trajectory_recorder import load_buffers
+
+    rng = np.random.default_rng(0)
+    for name in ["bc_uni_procgen", "bc_hier_procgen"]:
+        cfg = OmegaConf.load(os.path.join(ROOT, "agent", f"{name}.yaml")).transformer_cfg
+        cfg.pretrained_encoder_path = IMPALA_CKPT
+        ev = BCAREvalAgent((64, 64, 3), (1,), "cpu", sample=False, transformer_cfg=cfg)
+        frames = [rng.integers(0, 256, (64, 64, 3), dtype=np.uint8) for _ in range(6)]
+        acts = [np.int64(a) for a in rng.integers(0, 15, 5)]
+        load_buffers(ev, frames, acts)
+        with torch.no_grad():
+            ref = ev.mdp(torch.as_tensor(np.stack(frames))[None], torch.as_tensor(np.stack(acts))[None])[0]
+
+        base = ev.logits_for()
+        check(f"[{name}] logits_for() = forward sobre los pixeles", torch.allclose(base, ref[-1], atol=1e-4))
+        new = rng.integers(0, 256, (3, 64, 64, 3), dtype=np.uint8)
+        got = ev.logits_for(obs_override=new, override_index=2)
+        ok = True
+        for i in range(3):
+            fr = list(frames)
+            fr[2] = new[i]
+            with torch.no_grad():
+                r = ev.mdp(torch.as_tensor(np.stack(fr))[None], torch.as_tensor(np.stack(acts))[None])[0, -1]
+            ok &= torch.allclose(got[i], r, atol=1e-4)
+        check(f"[{name}] logits_for(override) = forward con ese frame reemplazado", ok and got.shape == (3, 15))
+        check(f"[{name}] logits_for no modifica los buffers",
+              len(ev._obs_buffer) == 6 and np.array_equal(ev._obs_buffer[2], frames[2]))
+
+        a_idx = int(base.argmax())
+        n_s = len(ev._obs_buffer)
+        for stack, n_layer in ev.mdp.attn_stacks().items():
+            L = 2 * n_s if stack == "joint" else n_s
+            for layer in range(n_layer):
+                with torch.no_grad():
+                    pred, att = ev._forward_for_attr(stack, layer, capture_att=True)
+                    pred_t, _ = ev._forward_for_attr(stack, layer, tmp_att=att.clone())
+                ok = (torch.allclose(pred[0, -1], ref[-1], atol=1e-4) and att.shape == (1, cfg.n_head, L, L)
+                      and torch.allclose(pred_t, pred, atol=1e-5))
+                check(f"[{name}] {stack}{layer}: captura no cambia la prediccion y tmp_att=att la reproduce", ok)
+
+        # batch de m interpolaciones = bucle de Benjamin (analysis/attn_attr.py)
+        stack, layer, m = "joint", ev.mdp.attn_stacks()["joint"] - 1, 8
+        batched = attn_attr_layer(ev, stack, layer, a_idx, m=m)
+        with torch.no_grad():
+            _, att = ev._forward_for_attr(stack, layer, capture_att=True)
+        acc = torch.zeros_like(att)
+        for k in range(1, m + 1):
+            tmp = (k / m * att).clone().requires_grad_(True)
+            p, _ = ev._forward_for_attr(stack, layer, tmp_att=tmp)
+            p[0, n_s - 1, a_idx].backward()
+            acc += tmp.grad
+        looped = (att * acc / m)[0]
+        check(f"[{name}] IG en batch = IG en bucle", torch.allclose(batched, looped, atol=1e-5, rtol=1e-4))
+
+        # completitud del gradiente integrado: sum(attr) -> F(A) - F(0) al crecer m
+        # (la suma de Riemann converge; con m chico puede quedar lejos si F cambia
+        # bruscamente cerca de alpha = 0)
+        with torch.no_grad():
+            f1 = ev._forward_for_attr(stack, layer, tmp_att=att.clone())[0][0, n_s - 1, a_idx]
+            f0 = ev._forward_for_attr(stack, layer, tmp_att=torch.zeros_like(att))[0][0, n_s - 1, a_idx]
+        diff = (f1 - f0).item()
+        err = {mm: abs(attn_attr_layer(ev, stack, layer, a_idx, m=mm).sum().item() - diff) for mm in (50, 1000)}
+        check(f"[{name}] IG completitud: |sum attr - (F(A)-F(0))| m=50 {err[50]:.2e} -> m=1000 {err[1000]:.2e} "
+              f"(F(A)-F(0) = {diff:.4f})", err[1000] <= err[50] and err[1000] < 0.05 * max(abs(diff), 1e-2))
+        attr = attn_attr_layer(ev, stack, layer, a_idx, m=20)
+        # en la ultima capa conjunta solo la fila del token objetivo s_{n_s-1} llega al logit
+        rows = attr.abs().sum(dim=(0, 2))
+        check(f"[{name}] ultima capa conjunta: masa solo en la fila objetivo 2(n_s-1)",
+              rows[2 * (n_s - 1)] > 0 and rows.sum() - rows[2 * (n_s - 1)] < 1e-8)
+else:
+    print(f"[SKIP] interpretabilidad: {IMPALA_CKPT} no existe")
+
 print()
 if failures:
     print(f"{len(failures)} FALLAS: {failures}")

@@ -1,0 +1,81 @@
+# task
+env_name: coinrun
+distribution_mode: easy   # mandatory 'easy'
+
+# Models to evaluate -- DIAGONAL ONLY: each model's saliency is computed on
+# ITS OWN sequences, never on another model's (no cross-model matrix).
+# The agent auto-configures from the payload's config (architecture, dims, etc.).
+# `states_dir`/`attattr_index` point at what ATTATTR already recorded/attributed
+# for this model (analysis/eval_bct_levels.py's states_<name>.pkl +
+# run_attn_attr_batch.py's index.csv) -- required for phase=evaluate (default),
+# unused by the legacy phase=record/both. A job's `models:` should normally
+# only list the models it can locally instantiate (e.g. only hier_* here,
+# only uni_* in the maskdp_sarfa checkout) -- there is no more need to carry
+# the other architecture's entries for cross-cell metadata.
+# Example format:
+#
+# models:
+#   - name: hier_seed1
+#     arch: hier
+#     seed: 1
+#     path: /path/to/snapshot_hier_seed1_781251.pt
+#     states_dir: /path/to/coin_run_records/hier/<job>/seqs/test
+#     attattr_index: /path/to/coin_run_records/hier/<job>/index.csv
+#   - name: hier_seed2
+#     arch: hier
+#     seed: 2
+#     path: /path/to/snapshot_hier_seed2_781251.pt
+#     states_dir: /path/to/coin_run_records/hier/<job>/seqs/test
+#     attattr_index: /path/to/coin_run_records/hier/<job>/index.csv
+models: []
+
+# evaluate (DEFAULT): for each model, read states_dir/attattr_index, restrict
+#           to exactly the (level, state_index) rows ATTATTR successfully
+#           attributed, optionally subsample to `states_per_episode` per level
+#           (quantile spacing), then evaluate that model on ITS OWN states only.
+# record (LEGACY): roll out its own on-policy trajectory per local model/level
+#           and persist it, then stop. Predates reading ATTATTR's recorded
+#           states; kept for standalone re-use only, not part of the default flow.
+# both (LEGACY): record then evaluate in the same process, using the legacy
+#           on-policy rollout instead of ATTATTR's recorded states.
+phase: evaluate   # record | evaluate | both
+
+# Optional sanity check: asserts every local model's K equals this value
+# to catch mismatches between runs.
+expected_K: null
+
+# Optional level filter, applied AFTER matching each model's attattr_index
+# (empty -> no filter, use every level ATTATTR attributed for that model).
+# LEGACY meaning ("which levels to roll out, must be an EXPLICIT list") only
+# applies to phase=record/both.
+levels: []
+
+# States per level to keep, applied AFTER matching each model's attattr_index
+# (quantile spacing over the matched, t-ordered states -- see
+# select_quantile_states). null -> keep every ATTATTR-matched state (no
+# subsampling, full 1:1 match). LEGACY phase=record/both uses this the same
+# way, but over its own raw on-policy rollout instead of the matched set.
+states_per_episode: 20
+
+# Perturbation settings. Calibrate before setting these values for a full run.
+perturbation:
+  d: 4
+  radius: 3.0
+  blur_sigma: 3.0
+  mode: occlude   # occlude | searchlight
+
+# Temporal saliency: GLOBAL frame blur at buffer position j. 
+# null -> reuses perturbation.blur_sigma.
+temporal_blur_sigma: null
+
+# Output: one npz per model (its own diagonal cell). (LEGACY phase=record/both
+# also writes per-model states_*.pkl here.)
+output_dir: null
+
+# misc
+seed: 1
+device: cuda
+use_wandb: true
+project: maskdp-mm-procgen-sarfa
+notes: "Hierarchical vs unimodal SARFA, raw per-model saliency (diagonal only, no cross-model matrix)"
+exp_name: sarfa_coinrun

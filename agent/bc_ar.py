@@ -55,10 +55,23 @@ class _Stack(nn.Module):
         self.blocks = nn.ModuleList([Block(config) for _ in range(n_layer)])
         self.register_buffer("attn_mask", torch.tril(torch.ones(max_len, max_len))[None, None])
 
-    def forward(self, x):
-        for blk in self.blocks:
-            x = blk(x, self.attn_mask)
-        return x
+    def forward(self, x, tar_layer=None, tmp_att=None, capture_att=False):
+        """
+        tar_layer/tmp_att/capture_att: ganchos de AttAttr (Benjamin,
+        analysis/attn_attr.py). En la capa tar_layer, tmp_att reemplaza la
+        atencion real (interpolacion alpha*att del gradiente integrado) y/o
+        capture_att devuelve esa atencion (B, n_head, L, L). Sin ganchos,
+        devuelve solo x, igual que antes.
+        """
+        att = None
+        for i, blk in enumerate(self.blocks):
+            if i == tar_layer and (tmp_att is not None or capture_att):
+                x, att = blk(x, self.attn_mask, tmp_att=tmp_att, return_att=True)
+            else:
+                x = blk(x, self.attn_mask)
+        if tar_layer is None:
+            return x
+        return x, att
 
 
 class BCARModel(nn.Module):
@@ -149,7 +162,7 @@ class BCARModel(nn.Module):
             return self.action_embed(a)
         return self.action_embed(action.float())
 
-    def forward(self, obs, action):
+    def forward(self, obs, action, attr=None):
         """
         obs:    (B, T, obs_dim) estados, (B, T, H, W, C) uint8 pixeles o
                 (B, T, n_embd) embeddings precalculados del encoder
@@ -157,8 +170,26 @@ class BCARModel(nn.Module):
                 Puede traer menos pasos que obs (en evaluacion falta a_T);
                 se rellena con ceros: la mascara causal impide que a_t
                 influya en la prediccion de a_t.
+        attr:   opcional, gancho de AttAttr: (stack, layer, tmp_att, capture_att)
+                con stack en attn_stacks() ("joint" = stack conjunto, "obs"/"act"
+                = stacks por modalidad de la topologia hier). Con attr se
+                devuelve (pred, att) en vez de pred.
         return: (B, T, action_dim) acciones o (B, T, num_actions) logits
         """
+        hook = {"joint": None, "obs": None, "act": None}
+        if attr is not None:
+            stack, layer, tmp_att, capture_att = attr
+            assert stack in self.attn_stacks(), (stack, self.attn_stacks())
+            hook[stack] = dict(tar_layer=layer, tmp_att=tmp_att, capture_att=capture_att)
+        att = None
+
+        def run(stack_mod, name, x):
+            nonlocal att
+            if hook[name] is None:
+                return stack_mod(x)
+            x, att = stack_mod(x, **hook[name])
+            return x
+
         B, T = obs.shape[0], obs.shape[1]
         s = self.embed_obs(obs)
         a = self.embed_actions(action) if action.shape[1] > 0 else s.new_zeros(B, 0, self.n_embd)
@@ -170,12 +201,22 @@ class BCARModel(nn.Module):
             s = s + self.pos_embed(pos)
             a = a + self.pos_embed(pos)
         else:
-            s = self.obs_stack(s + self.obs_pos_embed(pos))
-            a = self.act_stack(a + self.act_pos_embed(pos))
+            s = run(self.obs_stack, "obs", s + self.obs_pos_embed(pos))
+            a = run(self.act_stack, "act", a + self.act_pos_embed(pos))
 
         x = torch.stack([s, a], dim=2).reshape(B, 2 * T, self.n_embd)
-        x = self.stack(self.drop(x))
-        return self.action_head(x[:, 0::2])
+        x = run(self.stack, "joint", self.drop(x))
+        pred = self.action_head(x[:, 0::2])
+        if attr is None:
+            return pred
+        return pred, att
+
+    def attn_stacks(self):
+        """{nombre: n_capas} de los stacks de atencion, en orden de entrada a salida"""
+        if self.topology == "uni":
+            return {"joint": len(self.stack.blocks)}
+        return {"obs": len(self.obs_stack.blocks), "act": len(self.act_stack.blocks),
+                "joint": len(self.stack.blocks)}
 
     def action_loss(self, pred, action, mask=None):
         """mask: (B, T, 1) 1 en pasos reales, 0 en relleno (episodios cortos)"""
@@ -312,18 +353,85 @@ class BCAREvalAgent:
     def eval(self):
         self.mdp.eval()
 
+    @property
+    def num_actions(self):
+        return self.mdp.action_head[2].out_features
+
+    def _action_tensor(self, B=1):
+        if len(self._action_buffer) > 0:
+            act_t = torch.as_tensor(np.stack(self._action_buffer), device=self.device).unsqueeze(0)
+        elif self.mdp.discrete_actions:
+            act_t = torch.zeros(1, 0, dtype=torch.long, device=self.device)
+        else:
+            act_t = torch.zeros(1, 0, self.num_actions, device=self.device)
+        return act_t.expand(B, *act_t.shape[1:])
+
+    def _embed_frames(self, frames):
+        """(N, H, W, C) pixeles en [0, 255] -> (N, n_embd) con el encoder congelado"""
+        frames_t = torch.as_tensor(np.asarray(frames), device=self.device)
+        return self.mdp.embed_obs(frames_t.unsqueeze(1))[:, 0]
+
+    # Interfaz que piden los scripts de interpretabilidad de Benjamin
+    # (eval_sarfa.py, analysis/attn_attr.py), equivalente a la de su
+    # BCTEvalAgentMultimodal. Leen los buffers sin modificarlos.
+
+    def logits_for(self, obs_override=None, override_index=-1):
+        """
+        Logits crudos (num_actions,) de la accion actual para el contenido de
+        los buffers, opcionalmente reemplazando UN frame de la ventana.
+
+        obs_override:   (H, W, C) o (N, H, W, C), frame(s) perturbados en [0, 255].
+        override_index: posicion en el buffer de estados a reemplazar (-1 = frame
+                        actual, saliencia espacial; j < n_s-1 = frame pasado,
+                        saliencia temporal).
+        Devuelve (num_actions,) con un solo frame o sin override, (N, num_actions) con N.
+        """
+        assert self.mdp.pixel_obs and self.mdp.discrete_actions, "logits_for es para CoinRun"
+        n_s = len(self._obs_buffer)
+        assert n_s > 0, "logits_for() requiere el buffer de estados no vacio"
+        idx = override_index if override_index >= 0 else n_s + override_index
+        assert 0 <= idx < n_s, f"override_index={override_index} fuera de rango para n_s={n_s}"
+
+        with torch.no_grad():
+            s_emb = self._embed_frames(np.stack(self._obs_buffer))  # (n_s, D)
+            if obs_override is None:
+                return self.mdp(s_emb.unsqueeze(0), self._action_tensor())[0, n_s - 1]
+
+            override = np.asarray(obs_override)
+            single = override.ndim == 3
+            if single:
+                override = override[None]
+            B = override.shape[0]
+            s_b = s_emb.unsqueeze(0).repeat(B, 1, 1)
+            s_b[:, idx] = self._embed_frames(override)
+            logits = self.mdp(s_b, self._action_tensor(B))[:, n_s - 1]
+        return logits[0] if single else logits
+
+    def _forward_for_attr(self, stack, tar_layer, tmp_att=None, capture_att=False):
+        """
+        Forward sobre los buffers con el gancho de AttAttr en la capa tar_layer
+        de `stack` (ver BCARModel.attn_stacks()). tmp_att (B, n_head, L, L)
+        reemplaza la atencion de esa capa; el resto del input se repite B
+        veces, asi las m interpolaciones del gradiente integrado van en un solo
+        batch.
+
+        Devuelve (pred_a (B, n_s, num_actions), att (B, n_head, L, L)).
+        """
+        n_s = len(self._obs_buffer)
+        assert n_s > 0
+        B = 1 if tmp_att is None else tmp_att.shape[0]
+        with torch.no_grad():
+            s_emb = self._embed_frames(np.stack(self._obs_buffer))
+        obs_t = s_emb.unsqueeze(0).expand(B, -1, -1)
+        return self.mdp(obs_t, self._action_tensor(B), attr=(stack, tar_layer, tmp_att, capture_att))
+
     def act(self, obs):
         if self.mdp.pixel_obs and obs.ndim == 4:  # (1, H, W, C) de Procgen
             obs = obs[0]
         self._obs_buffer.append(obs)
 
         obs_t = torch.as_tensor(np.stack(self._obs_buffer), device=self.device).unsqueeze(0)
-        if len(self._action_buffer) > 0:
-            act_t = torch.as_tensor(np.stack(self._action_buffer), device=self.device).unsqueeze(0)
-        elif self.mdp.discrete_actions:
-            act_t = torch.zeros(1, 0, dtype=torch.long, device=self.device)
-        else:
-            act_t = torch.zeros(1, 0, self.mdp.action_head[2].out_features, device=self.device)
+        act_t = self._action_tensor()
 
         with torch.no_grad():
             pred = self.mdp(obs_t, act_t)[0, -1]
