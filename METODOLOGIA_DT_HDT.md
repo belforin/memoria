@@ -3164,6 +3164,62 @@ snapshots DMC con la evaluación corregida (scripts listos en
 para descartar el único factor de arquitectura que no es parte de la
 pregunta.
 
+### 7.13 Re-evaluación de los snapshots DMC de Benjamín con la evaluación corregida (2026-10-06)
+
+**Decisión del usuario (2026-10-06):** re-evaluar (revisa la decisión de
+§7.8), para saber si la ventaja de BC en DMC es del modelo o del desfase de su
+evaluación (§7.12).
+
+**Montaje.** Scripts de `~/MaskDP_bc/reeval_ben/` (fuera de git, §7.8): su
+`eval_return.py` dentro de su repo y su entorno, sin modificarlos, con dos
+modos. `original`: su agente tal cual. `fixed`: la memoria de acciones guarda
+T_cond − 1 acciones y siempre se lee la predicción del estado actual (su
+Algoritmo 1). Mismos parámetros que sus `eval/final/*_return.sh` (T_cond =
+T_pred = 12, replan cada paso, seed de evaluación = seed de entrenamiento) y
+100 episodios como su tesis. Snapshots: unistream y reduce_enc sin
+aumentación × 3 tareas × 3 semillas (`snapshots_noaug.tsv`, paso 400k). Jobs
+31201/31202 (ventress) y 31208. El 31203 falló en scylla: el entorno de
+Benjamín no ve la GPU de ese nodo; se relanzó como 31208 excluyendo scylla.
+Resultados en `~/models/reeval_ben/results.tsv` y un log por corrida.
+
+**Resultados** (retorno, media ± desviación sobre 3 semillas; por semilla
+s1/s2/s3):
+
+| | Original (reproducido) | Tesis | Corregida | BC-uni | BC-hier |
+|---|---|---|---|---|---|
+| unistream cheetah | 653,2 ± 120,0 (518/696/746) | 685,7 ± 83,6 | 742,1 ± 58,8 (678/793/756) | 780,2 ± 10,5 | 784,4 ± 5,5 |
+| reduce_enc cheetah | 442,7 ± 375,1 (669/650/10) | 428,8 ± 372,6 | 492,9 ± 420,2 (765/705/9) | | |
+| unistream walker | 438,5 ± 113,0 (451/545/320) | 470,3 ± 126,9 | 746,1 ± 28,7 (772/752/715) | 761,6 ± 0,8 | 766,4 ± 2,7 |
+| reduce_enc walker | 445,8 ± 233,3 (566/177/594) | 452,4 ± 278,7 | 728,0 ± 25,4 (744/699/741) | | |
+| unistream quadruped | 909,0 ± 20,3 (899/896/932) | 922,8 ± 49,3 | 919,5 ± 7,4 (926/911/922) | 918,6 ± 3,9 | 917,2 ± 1,2 |
+| reduce_enc quadruped | 902,7 ± 28,5 (874/903/931) | 900,8 ± 47,5 | 918,0 ± 17,0 (898/929/927) | | |
+
+**Lectura:**
+1. **El modo original reproduce su tesis** (diferencias dentro de la
+   dispersión entre semillas; con 100 episodios cada corrida tiene su propio
+   ruido), así que el montaje es correcto.
+2. **El desfase subestimaba mucho sus retornos en walker y cheetah:** walker
+   +300 (unistream 438 → 746, reduce_enc 446 → 728), cheetah unistream +89.
+   Además, la desviación entre semillas baja a la cuarta parte o menos: gran
+   parte de la variabilidad de su tabla venía de la evaluación. En quadruped,
+   saturado, el efecto es chico (+10-15).
+3. **reduce_enc cheetah s3 colapsó en el entrenamiento** (~9 con las dos
+   evaluaciones), como menciona su tesis para algunas semillas jerárquicas en
+   cheetah sin aumentación. Sin esa semilla, la corregida da 734,9 ± 43,0.
+4. **BC frente a MaskDP con la evaluación corregida:** la ventaja de BC se
+   reduce de ~100-300 puntos a **~15-40**: cheetah 780/784 vs. 742 (uni) y
+   735 (reduce_enc sin s3), walker 762/766 vs. 746/728, quadruped empatado
+   (~918). BC sigue arriba en cheetah y walker en la media, y con desviaciones
+   mucho menores, pero las 3 semillas no siempre se separan: unistream
+   cheetah s2 (793) y walker s1 (772) superan a algunas semillas de BC.
+   **Conclusión: la mayor parte de la ventaja de BC en DMC era un artefacto
+   de su evaluación**; lo que queda es una ventaja pequeña y más estable (menos
+   varianza entre semillas). Dos diferencias de protocolo siguen sin igualar:
+   la ventana (su T_cond = 12 vs. nuestra K = 64; en BC no cambia el
+   resultado, §7.10) y la posición aprendida vs. sinusoidal (punto 35).
+5. Entre sus topologías, con la evaluación corregida, unistream ≥ reduce_enc
+   en las tres tareas, como en BC (BC-uni ≈ BC-hier).
+
 ## Resumen de próximos pasos concretos
 
 1. [x] Igualar parámetros DT vs HDT (Etapa 0) y documentar la tabla de config.
@@ -3386,9 +3442,11 @@ pregunta.
 33. [x] Curvas por época en CoinRun (épocas 10-50, job 30915, §7.10): ver si
    BC-hier se sobreajusta al final, como explicación de su test más bajo.
    No: las curvas son planas desde la época 10 en las dos topologías.
-34. [ ] **Decisión del usuario:** re-evaluar los snapshots DMC de Benjamín con
-   la evaluación corregida (§7.12, revisa la decisión de §7.8), para saber si
-   la ventaja de BC en cheetah/walker es del modelo o de su evaluación.
+34. [x] Re-evaluar los snapshots DMC de Benjamín con la evaluación corregida
+   (decisión del usuario 2026-10-06, §7.13). La original reproduce su tesis;
+   la corregida sube walker ~+300 y cheetah unistream +89. La ventaja de BC
+   baja de ~100-300 a ~15-40 puntos en cheetah/walker; quadruped empatado.
+   La mayor parte de la ventaja era un artefacto de su evaluación.
 35. [ ] Opcional, según el punto 34: BC con posición sinusoidal fija, para
    descartar la única diferencia de arquitectura con Benjamín que no es parte
    de la pregunta (§7.12).
