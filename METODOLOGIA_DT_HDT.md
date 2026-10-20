@@ -3220,6 +3220,491 @@ s1/s2/s3):
 5. Entre sus topologías, con la evaluación corregida, unistream ≥ reduce_enc
    en las tres tareas, como en BC (BC-uni ≈ BC-hier).
 
+**Re-evaluación con aumentación (lanzada 2026-10-12, decisión del usuario).**
+Su lectura 4 compara la corregida sin aumentación con la original con
+aumentación (jitter + modality dropout, la otra condición de su tabla), así
+que falta corregir también esa condición. Mismo `reeval.sbatch`, con
+`TSV=snapshots_aug.tsv` (unistream y reduce_enc, condición `ambas`, 3 tareas
+× 3 semillas, paso 400k; los 18 snapshots existen). Jobs 32011-32013 (6
+filas cada uno, `--exclude=scylla`). Resultados en el mismo
+`~/models/reeval_ben/results.tsv` (columna `cond` = `ambas`).
+
+**Resultados con aumentación** (jobs 32011-32013 completos el 2026-10-12;
+documentados el 2026-10-19). Retorno, media ± desviación sobre 3 semillas,
+100 episodios; BC sin aumentación (como se entrenó):
+
+| | Original (reproducido) | Tesis | Corregida | Corregida sin aum. | BC-uni | BC-hier |
+|---|---|---|---|---|---|---|
+| unistream cheetah | 663,4 ± 79,4 (612/755/624) | 639,6 ± 95,4 | 809,4 ± 17,0 (803/797/829) | 742,1 ± 58,8 | 780,2 ± 10,5 | 784,4 ± 5,5 |
+| reduce_enc cheetah | 678,1 ± 55,4 (689/618/727) | 699,0 ± 74,3 | 783,7 ± 20,2 (806/767/778) | 492,9 ± 420,2 | | |
+| unistream walker | 583,2 ± 26,2 (554/592/604) | 607,5 ± 11,7 | 760,3 ± 5,4 (760/755/766) | 746,1 ± 28,7 | 761,6 ± 0,8 | 766,4 ± 2,7 |
+| reduce_enc walker | 501,6 ± 88,8 (583/407/516) | 536,1 ± 30,0 | 749,6 ± 21,0 (765/758/726) | 728,0 ± 25,4 | | |
+| unistream quadruped | 901,6 ± 16,8 (890/895/921) | 933,9 ± 5,8 | 923,1 ± 6,3 (919/930/920) | 919,5 ± 7,4 | 918,6 ± 3,9 | 917,2 ± 1,2 |
+| reduce_enc quadruped | 883,8 ± 39,3 (912/901/839) | 922,1 ± 22,5 | 913,7 ± 5,1 (912/910/919) | 918,0 ± 17,0 | | |
+
+**Lectura:**
+1. **El modo original reproduce su tesis en cheetah y walker** (diferencias
+   de 20-35, dentro de la dispersión). En quadruped el reproducido queda
+   ~30-40 abajo en las dos topologías, fuera de la desviación de su tabla
+   para unistream (±5,8). No se investigó; con la corregida quadruped
+   vuelve a ~915-925, como en las demás condiciones.
+2. **El desfase también afectaba esta condición:** walker +177 (uni) y +248
+   (reduce_enc), cheetah +146 y +106; quadruped +20-30. La desviación entre
+   semillas baja a ≤ 21 en todas las celdas.
+3. **Con la evaluación corregida, la aumentación ayuda poco salvo en
+   cheetah:** unistream cheetah +67 (742 → 809); reduce_enc cheetah no
+   colapsa con aumentación (784, frente a la semilla 3 en ~9 sin ella);
+   walker +14/+22; quadruped sin cambio.
+4. **BC frente a MaskDP con aumentación y evaluación corregida: empate o
+   MaskDP arriba.** Cheetah: MaskDP unistream 809 > BC 780/784, reduce_enc
+   784 ≈ BC. Walker: 760/750 vs. 762/766, empate. Quadruped: 923/914 vs.
+   919/917, empate. La desviación entre semillas también queda en el mismo
+   rango que BC. Esto completa la lectura 4 anterior: **la ventaja de BC en
+   DMC no se sostiene** cuando las dos condiciones de MaskDP se evalúan bien;
+   BC solo queda ~15-40 arriba frente a MaskDP *sin* aumentación. La
+   comparación más limpia sigue siendo sin aumentación, porque BC no usa
+   aumentación (no se probó BC con jitter).
+5. **Topologías de MaskDP:** con aumentación, unistream ≥ reduce_enc en las
+   tres tareas (809 vs. 784, 760 vs. 750, 923 vs. 914), igual que sin
+   aumentación y que en BC.
+
+### 7.14 Arquitectura de BC-uni y BC-hier y motivo de cada decisión (2026-10-12)
+
+Referencia consolidada del modelo de la rama `bc-plugandplay`
+(`agent/bc_ar.py`, configs `agent/bc_{uni,hier}[_procgen].yaml`). Junta lo
+decidido en §7.3-7.12.
+
+**Idea general.** BC autoregresivo: un transformer causal que mira la
+historia reciente de estados y acciones y predice la acción actual. Es DT/HDT
+sin el token de return-to-go: 2 tokens por paso `(s_t, a_t)` en vez de 3.
+Se enchufa en el pipeline de Benjamín (sus datos, entornos y scripts de
+evaluación sin cambios) porque el encargo era un *plug-and-play of a
+different model* (§7.5). Entre BC-uni y BC-hier solo cambia cómo se mezclan
+estados y acciones.
+
+**Piezas comunes y por qué:**
+
+| Pieza | Implementación | Por qué |
+|---|---|---|
+| Embedding de estado (DMC) | `Linear(obs_dim → 256)` | estándar de DT |
+| Embedding de estado (CoinRun) | IMPALA: convoluciones preentrenadas + proyección aleatoria, todo congelado; embeddings precalculados (§7.4) | igual que todas las variantes de Benjamín (su §3.4.2): misma representación visual para todos los modelos. El checkpoint se carga después del init de pesos para que no lo pise (§3) |
+| Embedding de acción | `Linear(action_dim → 256)` continua; `Embedding(15, 256)` discreta | estándar de DT |
+| Normalización de observaciones | ninguna | Benjamín no normaliza y su pipeline no calcula estadísticas; normalizar sería una diferencia más |
+| Posición | embedding aprendido de la posición en la ventana (0…T−1) | su buffer no entrega el timestep del episodio y no se toca su pipeline; además reduce parámetros (64/16 posiciones en vez de 1000). **Difiere de Benjamín** (sinusoidal fija): punto 35 |
+| Bloque | `Block` de su `agent/modules/attention.py`: pre-LN, atención causal 4 cabezas × 64, MLP 256→1024→256 con GELU, residuales | los mismos bloques de MaskDP: la diferencia queda en topología y objetivo, no en el bloque |
+| Cabeza | salidas en los tokens de estado → `LayerNorm → ReLU → Linear` (+ `Tanh` en continuo) | la misma de nuestro DT/HDT; Tanh porque las acciones DMC están en [−1, 1] |
+| Qué se predice | a_t desde el token s_t: ve s_1..s_t y a_1..a_{t−1} | factorización estándar de DT/GPT, π(a_t \| historia, s_t); sin fuga, verificado en `test_bc_ar.py` |
+| Loss | MSE (DMC), cross-entropy (CoinRun), promediada solo sobre pasos reales | episodios cortos de CoinRun (mediana 52) se rellenan con ceros al final en vez de filtrarse (filtrar sesga hacia episodios largos), como su buffer; con atención causal el relleno final no afecta los pasos reales (§7.3) |
+| Init | Xavier en Linear, N(0, 0,02) en Embedding, LN (1, 0); se saltan parámetros congelados | no reinicializar el IMPALA |
+| Optimizador | AdamW, WD solo en matrices de Linear/Conv | replica su `_classify_params`; con WD 0 (DMC) es Adam, como él |
+
+**BC-uni (5 bloques sobre la secuencia conjunta).**
+
+```
+s_1 a_1 s_2 a_2 ... s_T a_T   (2T tokens; s_t y a_t comparten la posición t)
+└──────── 5 bloques causales ────────┘ → tokens s_t → cabeza → â_t
+```
+
+Estados y acciones se mezclan en las 5 capas. 5 bloques = sus 3 de encoder
++ 2 de decoder del unistream, todos de ancho 256: 3,97M parámetros vs. sus
+4,09M (−3%); un sexto bloque daría ~+15%. Es casi la línea base GPT del paper
+de MaskDP (que además predice el estado siguiente y usa posición sinusoidal).
+
+**BC-hier (2 + 2 + 1).**
+
+```
+s_1..s_T + pos_s → 2 bloques causales (estados)  ─┐
+a_1..a_T + pos_a → 2 bloques causales (acciones) ─┤ intercalar
+                                                  ↓
+            s'_1 a'_1 ... s'_T a'_T → 1 bloque causal conjunto → tokens s_t → cabeza → â_t
+```
+
+- Cada flujo tiene su propia posición, como `SequenceEncoding` de nuestro
+  HDT: cada uno es una secuencia independiente antes de la fusión.
+- Causal dentro de cada modalidad; en la fusión s'_t solo atiende a
+  a'_1..a'_{t−1}, así que no hay fuga de a_t.
+- 2+2+1 imita `reduce_enc` (2 enc por modalidad + 1 fusión), la variante
+  jerárquica de referencia de Benjamín (agregación de rangos, su §3.6.1).
+  Sus 2 capas de decoder (reconstrucción de tokens enmascarados) no tienen
+  rol en BC autoregresivo; a ancho 256 el presupuesto queda cubierto: 3,99M
+  vs. sus 4,16M (−4%).
+- **Limitación (§7.12):** igualar parámetros no iguala profundidad. Los
+  flujos corren en paralelo: 3 capas en serie (5 en BC-uni y en
+  `reduce_enc`) y una sola capa de mezcla entre modalidades. Variantes para
+  aislarlo, no planificadas: 2+2+3 (~+40% de parámetros) o flujos más
+  angostos (128, como él).
+
+**Hiperparámetros** (los de Benjamín, §7.6): DMC ventana 64, batch 384,
+lr 1e-4, sin dropout ni WD, 400k pasos; CoinRun ventana 16, batch 64, lr
+1e-4, dropout 0,1 en attn/resid/mlp y 0 en embeddings (se sigue su código;
+la tesis dice "attn/embd/resid"), WD 0,01, 50 épocas (~781k pasos). Todo
+copiado para que lo único distinto sea el modelo y su objetivo
+(autoregresivo vs. enmascarado).
+
+**Evaluación (`BCAREvalAgent`).** Lazo cerrado: guarda K estados y K−1
+acciones y lee la predicción en la posición del estado actual, la misma
+alineación del entrenamiento (la de Benjamín en DMC tiene el desfase de un
+paso, §7.8 y §7.13). Expone su interfaz (`T_cond`, `K`, `temperature`,
+`sample`), así que corre con `eval_return.py` y `eval_bct.py` sin
+modificarlos. En CoinRun muestrea con temperatura 1,0, como su protocolo.
+
+### 7.15 BC-hier 2+2+3: igualar la profundidad de `reduce_enc` (2026-10-19)
+
+**Origen: reunión con el profesor co-guía (Rex).** Se mostraron los
+resultados de §7.10-7.14. Tareas acordadas: (1) igualar la profundidad
+de BC-hier con la arquitectura de Benjamín (encoder de estado, encoder de
+acción y decoder: 2+2+3) y volver a correr; (2) slides de repaso que
+expliquen SARFA (top-5/10/20%) y AttAttr; (3) explicar de dónde salen los
+pesos de la agregación "ponderado por masa" frente a la "media simple"
+(§7.11); (4) revisar literatura de interpretabilidad para modelos
+autoregresivos. Esta sección cubre (1).
+
+**Config real de `reduce_enc` (leída de su snapshot
+`74_hier_enc128_dec256/cheetah/1`):** `n_embd=256`, `enc_n_embd=128`,
+`n_enc_layer=2`, `n_fuse_layer=1` con `fusion_type=cross`
+(`CoAttentionBlock`), `n_dec_layer=2`, `use_fusion_type_embed=True`,
+`pe=fixed`; 4.227.351 parámetros en total. Su IMPALA proyecta
+aleatoriamente directo a 128.
+
+**Dos variantes nuevas** (rama `bc-plugandplay`, `agent/bc_ar.py` con el
+parámetro nuevo `enc_n_embd`; configs `agent/bc_hier223[_procgen].yaml` y
+`agent/bc_hier223_enc128[_procgen].yaml`). Las dos tienen 2 + 2 + 3 bloques
+= **5 capas en serie** y 3 capas de mezcla entre modalidades, igual que
+BC-uni y `reduce_enc`:
+
+| Variante | Stacks por modalidad | Conjunto | Params DMC (cheetah) | vs. `reduce_enc` | Params CoinRun |
+|---|---|---|---|---|---|
+| BC-hier (actual) | 2+2 a 256 | 1 a 256 | 3.990.022 | −4,1% | 3.965.199 |
+| `bc_hier223` | 2+2 a 256 | 3 a 256 | 5.569.542 | +33,8% | 5.544.719 |
+| `bc_hier223_enc128` | 2+2 a 128 | 3 a 256 | 3.250.566 | −21,9% | 3.239.311 |
+
+- `enc_n_embd=128`: los embeddings de estado y acción, las posiciones y los
+  stacks por modalidad van a 128 (4 cabezas de 32). Antes de intercalar,
+  cada stream pasa por `LayerNorm + Linear(128→256)`, como su
+  `state_encoder_norm`/`state_proj`. En CoinRun, la proyección aleatoria
+  congelada del IMPALA va directo a 128, igual que la suya.
+- **La variante enc128 no queda en paridad (−22%):** su fusión por
+  co-atención tiene un MLP por modalidad (≈ 2 bloques) y su decoder tiene
+  proyecciones extra. No se agrega co-atención (los modelos son de la
+  familia DT). Paridad a la misma profundidad se lograría con encoders a
+  176 (−4,2%) o 192 (+2,8%); **decisión del usuario: usar 128, los anchos
+  de Benjamín.** El tamaño queda como factor confundido en las dos
+  variantes, en sentidos opuestos (+34% y −22%).
+- Lo demás es igual a §7.14 (hiperparámetros, datos, evaluación).
+
+**Verificación.** `test_bc_ar.py` extendido a la variante con
+`enc_n_embd` (causalidad, loss enmascarada, entrenamiento, agente de
+evaluación, IMPALA a 128 congelado, ganchos de AttAttr en los 7 stacks,
+gradiente integrado): todo OK. La condición de convergencia del gradiente
+integrado se relajó a `err(m=1000) ≤ err(m=50) o err(m=1000) < 1e-4`:
+en BC-uni las dos quedaban en el piso de float32 (1,8e-5 vs. 3,8e-5,
+con |F(A)−F(0)| = 0,38) después de que las variantes nuevas cambiaron el
+consumo del RNG del test. Smoke test (job 33203, Titan RTX, 1000 pasos +
+2 episodios con `eval_return.py`/`eval_bct.py`): OK en las 4 configs.
+Velocidad: DMC 256 5,7 pasos/s (~20 h por corrida), DMC enc128 7,0
+(~16 h), CoinRun ~16-19 (~12-14 h).
+
+**Lanzamiento (2026-10-19):** 24 corridas, jobs 33205-33228 =
+{`bc_hier223`, `bc_hier223_enc128`} × {cheetah_run, walker_run,
+quadruped_walk, CoinRun} × semillas {1, 2, 3}, con
+`slurm_bc/train_bc_{dmc,procgen}.sbatch` sin cambios (cualquier GPU de
+`ialab-high`/`ialab-low`, 4 CPUs, DMC 20 GB, CoinRun 32 GB). 33205 en el
+cupo `long` (2080 Ti, 5,6 pasos/s); 33226-33228 pasados después a `long`
+(la QOS admite 4 jobs encolados) para mantener 5 corridas en simultáneo. En los pendientes se excluyeron
+`antuco` (MI210, AMD, sin CUDA) y `yodaxico` (1080 Ti); las DMC a 256
+excluyen además `scylla`, por riesgo de pasar las 24 h en una 1080 Ti.
+
+**Estado y throttle térmico en `hydra` (2026-10-20).** Las 4 corridas
+`bc_hier223` s1 terminaron (33205-33208, ~19 h 45 min en DMC y 20 h 26 min
+en CoinRun). Dos corridas enc128 iban 4-6× más lentas que las demás:
+33209 (cheetah s1, 1,1 pasos/s, en el paso 83k tras 21 h, iba a cortarse
+por el límite de 24 h cerca de 95k/400k) y 33226 (walker s3, 1,6 pasos/s;
+necesitaba ~70 h). `nvidia-smi` dentro de cada job (`srun --jobid=<id>
+--overlap`) mostró un solo proceso por GPU, sin contención, pero las GPUs
+de los buses 08:00 y 09:00 de `hydra` estaban a 88-91 °C con el ventilador
+al 100% y throttle térmico por software activo: reloj SM de 300 y 465 MHz
+(máximo 2100). En la misma máquina, 01:00 y 04:00 iban a 1590 MHz (~7
+pasos/s) y 05:00 a 870 MHz (CoinRun, ~15 pasos/s, sin riesgo). Es un
+problema de enfriamiento de esas tarjetas, no del código. Slurm no permite
+excluir GPUs puntuales, así que se cancelaron 33209/33226, sus workspaces
+se renombraron a `*_throttled_<jobid>` y se relanzaron excluyendo
+`antuco,yodaxico,scylla,hydra` (solo queda `llaima`): **33416** (cheetah
+enc128 s1, `regular`) y **33417** (walker enc128 s3, `long`). Los cupos
+liberados los tomaron jobs encolados que no excluyen `hydra`: 33213
+(cheetah hier223 s2) cayó en la GPU 08:00, y 33227 (quadruped enc128 s3,
+`long`) en una 1080 Ti de `scylla`, donde el entorno sí ve la GPU (1733
+MHz, sin throttle). Decisión del usuario: esperar unas horas y medir la
+velocidad de los dos antes de excluir `hydra` de toda la cola.
+
+**Pendiente:** evaluación con `eval_bc_dmc.sbatch` /
+`eval_bc_procgen.sbatch` (`AGENTS="bc_hier223 bc_hier223_enc128"`) y
+rehacer la interpretabilidad de CoinRun (§7.11) sobre las variantes
+nuevas.
+
+### 7.16 Métricas de interpretabilidad: definiciones y métricas nuevas (2026-10-19)
+
+Cubre las tareas 2, 3 y 4 de la reunión (§7.15).
+
+#### 7.16.1 Definición exacta de las métricas actuales (verificada en el código)
+
+**SARFA espacial** (Puri et al., ICLR 2020; `third_party/sarfa_saliency.py`,
+`eval_sarfa.py`). Para el estado actual se toma la acción del modelo â
+(argmax de los logits). Se perturba el frame actual con un blur gaussiano
+(σ = 3) en un disco de radio 3 alrededor de cada centro de una grilla cada
+4 píxeles: 16 × 16 = **256 celdas**. Por celda:
+- dP = p(â | original) − p(â | perturbado) (softmax de los logits);
+- K = 1 / (1 + KL), con la KL entre las distribuciones *sin* â, antes y
+  después (penaliza perturbaciones que también cambian las demás acciones:
+  "especificidad");
+- saliencia = 2·dP·K / (dP + K) si dP > 0; si no, 0.
+
+Resultado: un mapa 16 × 16 por estado.
+- **Entropía espacial** (`map_entropy`): el mapa se recorta a ≥ 0, se
+  normaliza a suma 1 y se calcula la entropía de Shannon (nats). Máximo
+  posible ln 256 ≈ 5,55 (saliencia uniforme). Más alta = más difusa.
+- **Concentración top-k%** (`topk_mass_fraction`): mismo mapa normalizado;
+  fracción de la masa en el k% de celdas más salientes: top-5% = 13
+  celdas, top-10% = 26, top-20% = 51. Con saliencia uniforme valdría
+  0,05/0,10/0,20. Ejemplo: 0,60 en top-5% = 13 de 256 celdas concentran
+  el 60% de la saliencia.
+- **Saliencia temporal**: lo mismo, pero se difumina el frame *completo* en
+  cada posición j de la ventana. Los valores ≥ 0 se normalizan a suma 1
+  sobre la ventana y se ordenan por retraso (0 = frame actual). Solo
+  perturba frames: las acciones pasadas no se prueban.
+
+**AttAttr** (Hao et al., AAAI 2021; `analysis/bc_attn_attr.py`). Para una
+capa, Attr(A) = A ⊙ (1/m) Σ_{k=1..m} ∂F(k/m · A)/∂A, con A la matriz de
+atención de la capa (por cabeza), F el logit de â en la posición del
+estado actual y m = 20. Es gradiente integrado aplicado a la atención de
+**una capa a la vez**: da una matriz L × L por (capa, cabeza) y estado.
+- **Campo receptivo de una matriz** (`receptive_field_diagnostics`): se
+  divide por el máximo de la matriz, se descartan valores negativos y la
+  diagonal, y con esos pesos se promedia la distancia en pasos
+  |t(i) − t(j)| entre consulta y clave.
+- **Campo receptivo de una capa**: mediana sobre estados para cada cabeza,
+  y media sobre cabezas.
+- **Herfindahl**: Σ p², con p la masa |Attr| (sumada sobre capas y
+  cabezas) normalizada a 1 sobre las celdas. Más alto = más concentrada.
+
+**De dónde salen los pesos de la agregación entre capas** (tarea 3;
+`analysis/bc_attn_attr_metrics.py`, `weights()`):
+- *Media simple*: promedio sin pesos del campo receptivo de cada capa.
+- *Ponderado por masa*: para cada estado, masa de la capa = Σ |Attr|
+  (todas las cabezas y celdas); peso de la capa = su masa / masa total de
+  las capas consideradas; se promedia sobre estados. Campo receptivo del
+  modelo = Σ_capa peso × campo receptivo de la capa. En BC-uni, joint0
+  pesa 0,53 y joint4 0,08 (§7.11).
+- **La conclusión depende de la agregación**: con media simple BC-uni mira
+  más atrás (3,01 vs. 2,58 pasos); ponderado por masa son iguales (2,33 vs.
+  2,30), porque las primeras capas, que miran poco hacia atrás, concentran
+  la masa.
+- **Dos debilidades:** (a) el campo receptivo usa solo la parte positiva
+  normalizada por el máximo, pero la masa usa |Attr| (incluye la parte
+  negativa); (b) no está claro que la escala de AttAttr sea comparable entre
+  capas, así que la masa no equivale a la importancia de la capa. Además, la
+  "última capa conjunta" no es equivalente entre topologías (§7.12). Esto
+  motiva medir en la entrada del modelo (métricas 2 y 4).
+
+#### 7.16.2 Métricas nuevas (tarea 4)
+
+Propuestas a partir de una primera búsqueda bibliográfica (no es una
+revisión sistemática):
+1. **Curva de contexto**: retorno en lazo cerrado con ventana de evaluación
+   K ∈ {1, 2, 4, 8, 16, 32, completa} (CoinRun hasta 16). Mide cuánta
+   historia *necesita* el modelo, sin depender de ningún método de
+   atribución.
+2. **Perfil de dependencia por intervención, por retraso y modalidad**
+   (implementada, abajo).
+3. **Copycat** (Wen et al., NeurIPS 2020: BC con historia tiende a copiar
+   la acción anterior del experto): (a) efecto de anular todas las acciones
+   pasadas, (b) parecido de la predicción con a_{t−1} frente al del experto.
+   Va incluida en la métrica 2.
+4. **Atribución de todo el modelo sobre los tokens de entrada**: Integrated
+   Gradients en los embeddings de entrada y ALTI (Ferrando et al., EMNLP
+   2022); validadas con curvas de eliminación (AOPC, ERASER) contra la
+   métrica 2. Pendiente.
+
+Contexto: no se encontró trabajo de atribución temporal en Decision
+Transformers. Decision ConvFormer (ICLR 2024) argumenta que la atención de
+DT no captura bien la dependencia local de las trayectorias.
+
+**Métrica 2 — implementación** (`analysis/lag_ablation.py`, rama
+`bc-plugandplay`):
+- Entradas: 512 ventanas del dataset de la tarea evaluada (para quadruped,
+  `quadruped_walk`), de largo K = `traj_length` (64 DMC, 16 CoinRun), solo
+  ventanas completas, con la alineación de su replay buffer (obs[i+j] con
+  action[i+1+j]). Las mismas ventanas para todos los modelos (`--seed 0`).
+  Se predice a_t en la última posición.
+- Intervención: se reemplaza un token, s_{t−k} (k = 0..K−1) o a_{t−k}
+  (k = 1..K−1), por el de un paso al azar de **otro episodio** (pool de
+  4096 pasos que no aparecen en las ventanas). Son valores realistas, no
+  ceros ni blur, para no sacar al modelo de distribución. Se promedian 4
+  donantes. Además se reemplazan todos los estados pasados a la vez y
+  todas las acciones pasadas a la vez. En CoinRun se reemplaza el embedding
+  del IMPALA congelado, que equivale a reemplazar el frame (§7.4).
+- Distancia: CoinRun, KL(p ‖ p′) entre softmax (T = 1) y tasa de cambio
+  del argmax; DMC, RMS de la diferencia de la acción predicha.
+- Escalares: `d_current_state`, `d_all_past_states`,
+  `d_all_past_actions`; `frac_action_past` = efecto de las acciones
+  pasadas / (estados pasados + acciones pasadas), sumando efectos
+  individuales (los efectos no son aditivos: es un reparto aproximado);
+  `mean_lag_past` = retraso medio ponderado por efecto (k ≥ 1); `lag_90` =
+  retraso donde el efecto acumulado llega al 90%; y las de copycat.
+- Como interviene en la entrada, se define igual para uni y jerárquico.
+- Verificación (`test_lag_ablation.py`, QOS `debug`): alineación de
+  ventanas, donantes de otros episodios, donante idéntico ⇒ efecto 0,
+  igualdad con un cálculo manual por retraso en uni/hier/hier-enc ×
+  continuo/discreto, y script de punta a punta: todo OK.
+- Lanzador `slurm_bc/lag_ablation.sbatch` (salta snapshots faltantes o ya
+  hechos); resumen con `analysis/lag_ablation_summary.py <dir>`. Job 33236
+  (QOS `debug`, cupo propio aparte de `regular`) sobre BC-uni y BC-hier,
+  12 semillas cada uno.
+
+**Métrica 2 — resultados BC-uni vs. BC-hier** (jobs 33236 y 33243,
+2026-10-19; el 33236 llegó al límite de 1 h de `debug` y el 33243 completó
+lo que faltaba). Media ± desviación sobre 3 semillas;
+`~/models/bc_plugandplay/lag_ablation/`, resumen con
+`lag_ablation_summary.py`. Distancia: RMS en DMC, KL en CoinRun.
+
+| Tarea | Modelo | d(s_t) | d(todos los s pasados) | d(todas las a pasadas) | frac_action_past | mean_lag_past | lag_90 |
+|---|---|---|---|---|---|---|---|
+| cheetah | BC-uni | 0,793 ± 0,003 | 0,225 ± 0,005 | 0,149 ± 0,000 | 0,37 ± 0,00 | 11,2 ± 0,2 | 21 / 64 |
+| cheetah | BC-hier | 0,789 ± 0,003 | 0,267 ± 0,004 | 0,162 ± 0,001 | 0,70 ± 0,01 | 12,3 ± 0,4 | 22,7 / 64 |
+| walker | BC-uni | 0,948 ± 0,003 | 0,183 ± 0,002 | 0,132 ± 0,002 | 0,39 ± 0,01 | 9,7 ± 0,1 | 17 / 64 |
+| walker | BC-hier | 0,950 ± 0,000 | 0,110 ± 0,003 | 0,146 ± 0,004 | 0,82 ± 0,01 | 10,5 ± 0,3 | 19 / 64 |
+| quadruped | BC-uni | 0,997 ± 0,004 | 0,278 ± 0,004 | 0,136 ± 0,011 | 0,30 ± 0,02 | 13,5 ± 0,4 | 26,3 / 64 |
+| quadruped | BC-hier | 0,977 ± 0,007 | 0,295 ± 0,006 | 0,298 ± 0,013 | 0,63 ± 0,02 | 8,9 ± 0,3 | 17,3 / 64 |
+| CoinRun | BC-uni | 2,90 ± 0,14 | 1,93 ± 0,09 | 2,95 ± 0,04 | 0,82 ± 0,02 | 2,85 ± 0,06 | 4,3 / 16 |
+| CoinRun | BC-hier | 2,72 ± 0,07 | 0,94 ± 0,07 | 1,75 ± 0,02 | 0,72 ± 0,03 | 3,72 ± 0,17 | 5,7 / 16 |
+
+Perfil por retraso (efecto de reemplazar un solo token, media de semillas):
+
+| Tarea | Modelo | s, k = 1…5 | a, k = 1…5 |
+|---|---|---|---|
+| cheetah | BC-uni | 0,108 0,102 0,097 0,088 0,084 | 0,066 0,063 0,059 0,056 0,052 |
+| cheetah | BC-hier | 0,079 0,072 0,067 0,057 0,055 | 0,073 0,099 0,111 0,117 0,119 |
+| walker | BC-uni | 0,123 0,106 0,094 0,084 0,075 | 0,062 0,061 0,058 0,055 0,049 |
+| walker | BC-hier | 0,057 0,044 0,038 0,033 0,027 | 0,072 0,102 0,114 0,119 0,120 |
+| quadruped | BC-uni | 0,135 0,092 0,070 0,054 0,046 | 0,060 0,055 0,043 0,034 0,028 |
+| quadruped | BC-hier | 0,150 0,109 0,079 0,060 0,052 | 0,131 0,165 0,162 0,152 0,143 |
+| CoinRun | BC-uni | 0,194 0,117 0,075 0,058 0,037 | 1,15 0,46 0,33 0,20 0,14 |
+| CoinRun | BC-hier | 0,179 0,122 0,108 0,086 0,059 | 0,38 0,38 0,36 0,27 0,24 |
+
+Copycat (parecido con la acción anterior, mismas ventanas): DMC, RMS(â,
+a_{t−1}) frente a RMS(a_t experto, a_{t−1}): cheetah 0,389/0,390 vs. 0,406;
+walker 0,496/0,491 vs. 0,509; quadruped 0,994/0,985 vs. 0,858 (uni/hier
+vs. experto). CoinRun, P(â = a_{t−1}): 0,186 (uni) y 0,202 (hier) vs. 0,154
+del experto; acierto P(â = a_t) 0,761 (uni) y 0,675 (hier).
+
+**Lectura:**
+1. **El estado actual domina en todos los modelos.** Reemplazar s_t cambia
+   la predicción 3-8 veces más que reemplazar toda la historia de estados o
+   de acciones en DMC. En CoinRun la historia pesa bastante más: quitar
+   todas las acciones pasadas tiene un efecto del orden del de s_t.
+2. **En DMC, BC-hier depende más de las acciones pasadas que BC-uni**
+   (frac_action_past 0,63-0,82 vs. 0,30-0,39, con desviaciones de
+   ≤ 0,02). Su perfil de acciones además *crece* con el retraso entre k = 1
+   y k = 5, mientras que en BC-uni decrece. El efecto de "todas las
+   acciones pasadas" confirma la dirección en walker y quadruped (hier >
+   uni, y en walker supera al de los estados pasados), sin depender de la
+   suma de efectos individuales.
+3. **En CoinRun la diferencia va en sentido contrario en magnitud:** BC-uni
+   es más sensible a toda la historia (estados 1,93 vs. 0,94; acciones 2,95
+   vs. 1,75) y sobre todo a a_{t−1} (1,15 vs. 0,38). BC-hier reparte el
+   efecto de las acciones de forma más pareja y mira algo más atrás
+   (mean_lag_past 3,7 vs. 2,8).
+4. **Copycat:** sin evidencia en DMC (las predicciones se parecen a a_{t−1}
+   tanto como las acciones del experto). En CoinRun los dos modelos repiten
+   la acción anterior más que el experto (19-20% vs. 15%), un sesgo leve de
+   copycat, algo mayor en BC-hier aunque BC-uni es el más sensible a
+   a_{t−1}.
+5. **Quadruped:** las predicciones quedan lejos del experto (RMS 0,97) porque
+   los modelos entrenaron con datos de `quadruped_run` y las ventanas son
+   de `quadruped_walk` (§7.6). Sus números describen el modelo fuera de su
+   distribución de entrenamiento; se mantienen porque es la tarea que se
+   evalúa.
+6. **Frente a AttAttr (§7.11, CoinRun):** la media simple de AttAttr decía
+   que BC-uni mira más atrás (3,01 vs. 2,58) y la ponderada por masa decía
+   que son iguales (2,33 vs. 2,30). La intervención en la entrada dice que
+   BC-hier mira más atrás (3,7 vs. 2,8). Las dos agregaciones de AttAttr
+   quedan contradichas por una medida que no depende de la atención; falta
+   la métrica 4 para ver con qué coincide una atribución sobre todo el
+   modelo.
+7. Las diferencias son de topología, pero BC-hier tiene una sola capa de
+   mezcla (§7.12). Repetir sobre `bc_hier223` / `bc_hier223_enc128` cuando
+   terminen (§7.15) dirá si el uso de acciones pasadas viene de los flujos
+   separados o de la fusión tardía.
+
+**Métrica 4 — lanzamiento.** `test_input_attribution.py` (QOS `debug`, job
+33244): todo OK en uni/hier/hier-enc × continuo/discreto. La completitud
+de IG converge (error relativo mediano de 1-11% con m = 64 a 0,1-2% con
+m = 512), un token igual a la línea base recibe atribución 0, y un AOPC
+que reemplaza un token por sí mismo da 0. Lanzador
+`slurm_bc/input_attribution.sbatch` (copia de `lag_ablation.sbatch`, m =
+128).
+
+**AOPC solo sobre la historia (agregado tras la primera tanda).** La
+primera tanda (jobs 33245-33248, archivada en
+`~/models/bc_plugandplay/input_attribution_v1_sin_aopc_hist/`) mostró que
+en DMC el AOPC completo no distingue los órdenes. IG, oclusión y recencia
+ponen s_t primero, y reemplazarlo ya lleva la distancia a ~0,8-1,0, así
+que las tres curvas son iguales. Se agregó un AOPC que nunca reemplaza s_t
+(`history_only`) y su test (una historia igual a los donantes da 0 aunque
+s_t sea el primero del orden): OK. Tanda final: jobs 33264-33268, las 24
+corridas.
+
+**Métrica 4 — resultados** (media ± desviación sobre 3 semillas;
+`~/models/bc_plugandplay/input_attribution/`):
+
+| Tarea | Modelo | IG frac_action_past | IG mean_lag_past | Completitud (err. rel.) | Spearman(IG, oclusión) | AOPC hist. IG | oclusión | recencia | azar |
+|---|---|---|---|---|---|---|---|---|---|
+| cheetah | BC-uni | 0,22 ± 0,02 | 11,3 ± 0,5 | 7,2% | 0,92 | 0,168 | 0,183 | 0,155 | 0,057 |
+| cheetah | BC-hier | 0,61 ± 0,05 | 10,9 ± 0,9 | 4,1% | 0,89 | 0,169 | 0,169 | 0,163 | 0,081 |
+| walker | BC-uni | 0,31 ± 0,07 | 11,3 ± 0,3 | 6,4% | 0,90 | 0,145 | 0,173 | 0,146 | 0,049 |
+| walker | BC-hier | 0,49 ± 0,06 | 8,6 ± 0,4 | 3,6% | 0,88 | 0,131 | 0,151 | 0,125 | 0,061 |
+| quadruped | BC-uni | 0,24 ± 0,03 | 10,5 ± 0,6 | 8,2% | 0,87 | 0,211 | 0,244 | 0,182 | 0,047 |
+| quadruped | BC-hier | 0,44 ± 0,03 | 6,9 ± 0,5 | 4,9% | 0,94 | 0,290 | 0,331 | 0,269 | 0,082 |
+| CoinRun | BC-uni | 0,55 ± 0,01 | 4,7 ± 0,1 | 1,4% | 0,64 | 1,79 | 2,39 | 2,04 | 0,92 |
+| CoinRun | BC-hier | 0,63 ± 0,02 | 3,5 ± 0,1 | 1,1% | 0,73 | 1,27 | 1,56 | 1,20 | 0,70 |
+
+(AOPC: media sobre k ∈ {1, 2, 4, 8, 16} tokens reemplazados; desviaciones
+entre semillas ≤ 0,015 en DMC y ≤ 0,09 en CoinRun.)
+
+**Lectura:**
+1. **IG está bien calculado:** completitud de 1-8% con m = 128 y alta
+   concordancia de orden con la oclusión en DMC (0,87-0,94); más baja en
+   CoinRun (0,64-0,73).
+2. **Fidelidad: la oclusión gana siempre; IG queda en 75-100% de ella.**
+   En DMC, IG ≥ recencia por poco (empate en walker uni). En CoinRun, IG
+   pierde contra recencia en BC-uni (1,79 vs. 2,04) y empata en BC-hier.
+   Que la oclusión gane es en parte esperable, porque mide justo el efecto
+   de reemplazar cada token por separado. Aun así, para estos modelos IG no
+   ordena mejor la historia que la heurística "lo reciente importa más".
+3. **Lo que coincide con la métrica 2: en DMC, BC-hier usa más las acciones
+   pasadas que BC-uni** (IG: 0,44-0,61 vs. 0,22-0,31; intervención:
+   0,63-0,82 vs. 0,30-0,39). Las dos métricas dan la misma dirección en las
+   tres tareas, con magnitudes distintas. Es la conclusión más robusta de
+   esta etapa.
+4. **Lo que no coincide: cuánto mira hacia atrás cada topología.** CoinRun:
+   IG dice que BC-uni mira más atrás (4,7 vs. 3,5); la intervención dice
+   lo contrario (2,8 vs. 3,7). Walker: IG da hier más corto (8,6 vs.
+   11,3) y la intervención un poco más largo (10,5 vs. 9,7). Quadruped:
+   las dos dan hier más corto. Como la oclusión es más fiel que IG por
+   AOPC, se toma la métrica 2 como referencia, y la comparación uni vs.
+   hier de "cuánto mira atrás" se reporta como **dependiente del método**:
+   no sirve como conclusión.
+5. **Respuesta a la tarea 4:** para comparar topologías se propone usar la
+   intervención en la entrada (métrica 2) como métrica principal. Se define
+   igual para uni y jerárquico, no depende de la atención y es la más fiel
+   por AOPC. IG queda como control. Las dos agregaciones de AttAttr
+   (§7.11) no coinciden entre sí ni con la intervención.
+
+**Métrica 1 — lanzadores listos, sin enviar:**
+`slurm_bc/submit_context_curve.sh` manda un job por (dominio, K) con
+`eval_bc_{dmc,procgen}.sbatch`. Se agregó `EVAL_K` a
+`eval_bc_procgen.sbatch` (`agent.K`). Costo estimado: ~10 min por
+evaluación DMC de 100 episodios y ~3 min por CoinRun.
+
 ## Resumen de próximos pasos concretos
 
 1. [x] Igualar parámetros DT vs HDT (Etapa 0) y documentar la tabla de config.
@@ -3453,3 +3938,15 @@ s1/s2/s3):
 36. [ ] Informe: aclarar el nombre de la topología jerárquica frente a
    "Hierarchical Decision Transformer" (Correia y Alexandre, 2022) y describir
    BC-uni en relación con la línea base GPT de MaskDP (§7.12).
+37. [x] Re-evaluar con la evaluación corregida los snapshots DMC de Benjamín
+   con aumentación (jitter + modality dropout), para comparar sus dos
+   condiciones con la misma evaluación (jobs 32011-32013, §7.13). Hecho:
+   con aumentación MaskDP empata o supera a BC.
+38. [x] Métricas 2 (intervención por retraso y modalidad) y 4 (IG + AOPC)
+   sobre BC-uni y BC-hier en las 4 tareas (§7.16).
+39. [ ] Repetir las métricas 2 y 4 sobre `bc_hier223` y
+   `bc_hier223_enc128` cuando terminen sus entrenamientos (§7.15), para ver
+   si el uso de acciones pasadas de BC-hier viene de los flujos separados o
+   de la fusión en una sola capa.
+40. [ ] Enviar la curva de contexto (métrica 1, `submit_context_curve.sh`)
+   cuando haya cupo en `regular` (§7.16).
