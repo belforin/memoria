@@ -17,7 +17,8 @@
 # Su eval_bct.py no fija rand_seed en ProcgenEnv: los niveles sorteados
 # cambian entre corridas (igual que en sus resultados).
 # Variables opcionales: AGENTS, SEEDS, STEP (uno o varios pasos separados por
-# espacio), EPISODES, RUN_TAG (sufijo de los directorios de salida).
+# espacio), EPISODES, RUN_TAG (sufijo de los directorios de salida), EVAL_K
+# (largo de la ventana de evaluacion; vacio = traj_length del snapshot, 16).
 # eval_bct.py sobrescribe evaluate_bct.csv junto al snapshot: el log es el registro.
 set -uo pipefail
 source ~/miniconda3/etc/profile.d/conda.sh
@@ -28,6 +29,9 @@ source slurm_bc/paths.sh
 STEP=${STEP:-781250}
 EPISODES=${EPISODES:-100}
 RUN_TAG=${RUN_TAG:-}
+EVAL_K=${EVAL_K:-}
+if [ -n "$EVAL_K" ]; then K_ARGS="agent.K=$EVAL_K"; RUN_TAG="${RUN_TAG}_K$EVAL_K"; else K_ARGS=""; fi
+echo "EVAL_K=${EVAL_K:-traj_length}"
 
 for AGENT in ${AGENTS:-bc_uni bc_hier}; do
   for SEED in ${SEEDS:-1 2 3}; do
@@ -36,7 +40,7 @@ for AGENT in ${AGENTS:-bc_uni bc_hier}; do
     if [ ! -f "$SNAP" ]; then echo "[falta] $SNAP"; continue; fi
     if [ "$S" = 781250 ]; then STAG=""; else STAG="_step$S"; fi
     echo "=== $AGENT coinrun s$SEED step $S"
-    python eval_bct.py agent=bc_eval agent.path=$SNAP seed=$SEED num_episodes=$EPISODES use_wandb=false \
+    python eval_bct.py agent=bc_eval agent.path=$SNAP $K_ARGS seed=$SEED num_episodes=$EPISODES use_wandb=false \
         hydra.run.dir=$BC_RUNS/eval_procgen/${AGENT}_s${SEED}${STAG}${RUN_TAG} \
         exp_name=eval_${AGENT}_coinrun_s${SEED}${STAG}${RUN_TAG}
    done

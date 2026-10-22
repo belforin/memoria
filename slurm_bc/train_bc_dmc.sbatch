@@ -16,6 +16,8 @@
 # contexto 64, 400k pasos, buffer de 2M con 4 workers, snapshot final 400k.
 # Uso: sbatch -J bc_dmc_<agent>_<task>_s<seed> \
 #        --export=ALL,AGENT=bc_uni,TASK=cheetah_run,SEED=1 slurm_bc/train_bc_dmc.sbatch
+# Reanudar desde un snapshot (carga pesos y paso; AdamW parte de cero):
+#        --export=ALL,AGENT=...,TASK=...,SEED=...,RESUME_STEP=150000
 set -euo pipefail
 : "${AGENT:?bc_uni|bc_hier}" "${TASK:?cheetah_run|walker_run|quadruped_walk}" "${SEED:?}"
 source ~/miniconda3/etc/profile.d/conda.sh
@@ -25,6 +27,11 @@ unset DISPLAY
 cd $HOME/MaskDP_bc
 source slurm_bc/paths.sh
 NAME=${AGENT}_${TASK}_s${SEED}
+RESUME_ARGS=()
+if [ -n "${RESUME_STEP:-}" ]; then
+    RESUME_ARGS=(resume=true resume_step=$RESUME_STEP resume_dir=$BC_SNAP/dmc/$AGENT/${TASK%%_*})
+    NAME=${NAME}_resume${RESUME_STEP}
+fi
 
 python pretrain.py --config-name pretrain_full \
     agent=$AGENT task=$TASK seed=$SEED +action_repeat=1 \
@@ -32,4 +39,4 @@ python pretrain.py --config-name pretrain_full \
     num_grad_steps=400010 "snapshots=[0,50000,100000,150000,200000,250000,300000,350000,400000]" \
     goal_buffer_dir=null \
     snapshot_dir=$BC_SNAP/dmc/$AGENT hydra.run.dir=$BC_RUNS/dmc/$NAME \
-    use_wandb=false use_tb=true exp_name=$NAME
+    use_wandb=false use_tb=true exp_name=$NAME "${RESUME_ARGS[@]}"
