@@ -3436,6 +3436,41 @@ liberados los tomaron jobs encolados que no excluyen `hydra`: 33213
 MHz, sin throttle). Decisión del usuario: esperar unas horas y medir la
 velocidad de los dos antes de excluir `hydra` de toda la cola.
 
+**Medición tras ~5 h (2026-10-20).** 33213 en la GPU 08:00 de `hydra`
+(92 °C, 300 MHz, throttle activo): 0,85 pasos/s, 15k/400k; a las 24 h
+habría llegado a ~73k. 33227 en la 1080 Ti de `scylla` (83 °C, 1733 MHz,
+sin throttle): 4,1 pasos/s; a las 24 h llega a ~355k, así que su último
+snapshot será el de 350k, no el de 400k (`pretrain.py` con `resume` solo
+recarga pesos, no optimizador ni paso, así que no se puede continuar). La
+GPU 05:00 de `hydra` también bajó a 300 MHz (CoinRun 33212 pasó de ~14 a
+~12 pasos/s; igual termina en ~18 h). Se canceló 33213 (workspace
+`*_throttled_33213`, relanzado como **33500**); el cupo lo tomó 33214
+(walker hier223 s2), que cayó de nuevo en la 08:00, porque esa es justo la
+GPU que se libera: cancelar al caer en una GPU caliente no funciona sin
+más. Decisión: excluir `hydra` solo en los DMC pendientes (33215,
+33217-33219, 33221-33223, 33225, 33500); los CoinRun siguen pudiendo usar
+`hydra`, porque aguantan una GPU lenta. 33214 se canceló
+(`*_throttled_33214`) y se relanzó como **33501**. El cupo lo tomó 33216
+(CoinRun hier223 s2) en una 2080 Ti de `scylla`. A los DMC enc128
+pendientes (33217-33219, 33225) se les excluyó también `scylla`, para que
+no caigan en una 1080 Ti y se corten antes de 400k como 33227. Subirle el
+límite a 33227 en curso no se pudo (`Access/permission denied`: solo un
+administrador puede aumentarlo), así que se canceló a las 5 h (workspace
+`*_timelimit_33227`) y se relanzó como **33507** (`long`, `--time=30:00:00`,
+excluye `antuco,yodaxico,hydra`; cayó en una 1080 Ti de `scylla`, ~27 h).
+Para que no le ganaran el cupo de `long`, 33228 y 33417 se retuvieron
+(`scontrol hold`) hasta que arrancó. Nota: `ventress` está `down`
+("Node unexpectedly rebooted"), así que los DMC pendientes solo pueden ir
+a `llaima`. Pendiente: reportar a los administradores el enfriamiento de
+las GPUs 08:00/09:00 (y 05:00) de `hydra`.
+
+**Quadruped hier223 s2 (2026-10-21).** 33215 llegó a 156k en `ventress`
+antes del reinicio del nodo; el reintento 33689 se canceló en el paso 0 y
+quedó pendiente como **33690**. El logger agrega filas al `train.csv`
+existente, así que el workspace con las filas viejas se renombró a
+`*_rebooted_33215` (con `tb/` y `wandb/`) para que 33690 parta limpio.
+Decisión del usuario: evaluar recién cuando terminen las 24 corridas.
+
 **Pendiente:** evaluación con `eval_bc_dmc.sbatch` /
 `eval_bc_procgen.sbatch` (`AGENTS="bc_hier223 bc_hier223_enc128"`) y
 rehacer la interpretabilidad de CoinRun (§7.11) sobre las variantes
@@ -3704,6 +3739,91 @@ entre semillas ≤ 0,015 en DMC y ≤ 0,09 en CoinRun.)
 `eval_bc_{dmc,procgen}.sbatch`. Se agregó `EVAL_K` a
 `eval_bc_procgen.sbatch` (`agent.K`). Costo estimado: ~10 min por
 evaluación DMC de 100 episodios y ~3 min por CoinRun.
+
+### 7.17 Pérdida de acceso al home de Benjamín y datos DMC locales (2026-10-21)
+
+Desde aquí el proyecto trabaja **solo con BC** (`MaskDP_bc`); DT/HDT
+quedan fuera de alcance.
+
+**Qué pasó.** A las 20:37:54-57 del 2026-10-21 todos los homes de
+`/mnt-homes/wapol/*/*/` pasaron a `drwx------` en 3 segundos (rexgliu,
+bmancilla, johandal, los grupos asoto, caspillaga, cenia, etc.). Es un
+cambio masivo de los administradores, no algo de Benjamín.
+`/home/bmancilla/archive/...` quedó ilegible. Las 4 corridas BC DMC que
+arrancaron después (33222 walker hier223 s3, 33225 cheetah enc128 s3, 33416
+cheetah enc128 s1 y 33500 cheetah hier223 s2) fallaron a los ~20 s con
+`PermissionError` sobre `maskdp_train/<dominio>`. Las que ya corrían no
+se vieron afectadas, porque tenían los datos cargados en memoria. Las 3
+pendientes (33223, 33690 quadruped hier223 s3/s2 y 33501 walker hier223 s2)
+se retuvieron (`scontrol hold`).
+
+**Qué usaba BC de ese home y cómo quedó:**
+
+| Recurso | Uso en BC | Solución |
+|---|---|---|
+| `maskdp_data/maskdp_train` | entrenamiento DMC (`DMC_DATA`) | descarga local desde HF (abajo) |
+| `pretrained_encoders/procgen_coinrun_easy_encoder.pt` | encoder IMPALA de CoinRun | copia local en `MaskDP_mmodal/pretrained_encoders/`, verificada idéntica (los 30 tensores de `convnet` coinciden con el encoder congelado de un snapshot BC); `IMPALA_CKPT` en `paths.sh` y `test_bc_ar.py` apuntan ahí |
+| ruta del encoder guardada en el `cfg` de **todos** los snapshots BC de CoinRun | al reconstruir el modelo para evaluar, `BCARModel` intentaba cargar el encoder desde ella y fallaba (`eval_bct.py`, `eval_sarfa.py`, `eval_bct_levels.py`, `bc_attn_attr.py`, `lag_ablation.py`, `input_attribution.py`) | `snapshot_cfg()` en `agent/bc_ar.py` quita esa ruta al cargar un snapshot (los pesos ya vienen en el `state_dict`); la usan `BCAREvalAgent` y `lag_ablation.load_model` |
+| entornos conda, snapshots `reeval_ben/` (§7.13) | ninguno vigente | los entornos BC son clones propios (`maskdp-ben`, `procgen-env`); §7.13 ya terminó, pero no se puede repetir |
+
+Eval BC DMC (`eval_return.py`) no dependía del home de Benjamín: solo lee
+el snapshot y corre el entorno en vivo.
+
+**Qué datos usa en realidad el entrenamiento DMC.** `replay_buffer.py`
+ordena todos los `.npz` del dominio (`sorted(rglob)`). Cada uno de los 4
+workers carga episodios (de 1000 pasos) hasta pasar `replay_buffer_size /
+4` = 500k pasos. Por lo tanto, solo se usan los **primeros ~2.004 archivos
+en orden alfabético**, que caen todos en `expert/<primera tarea>/train`:
+
+| Dominio | Carpeta usada | ¿Coincide con la tarea evaluada? |
+|---|---|---|
+| cheetah | `expert/cheetah_run` | sí |
+| walker | `expert/walker_run` | sí |
+| quadruped | `expert/quadruped_run` | **no**: evaluamos `quadruped_walk` |
+
+Si la copia de Benjamín tenía la misma estructura que la de HF (la ruta
+`maskdp_train/quadruped` de los logs coincide), **todas las corridas BC de
+quadruped_walk se entrenaron con demostraciones expertas de
+quadruped_run**. Los logs no imprimen qué archivos se cargaron, así que
+no se puede confirmar del todo. **Decisión del usuario:** mantenerlo así,
+para que las corridas nuevas sean comparables con las ya hechas.
+Consecuencia: `input_attribution.sbatch` / `lag_ablation.sbatch` leen
+`expert/<tarea>/train` y para quadruped fallarán con los datos locales (no
+se bajó `expert/quadruped_walk`).
+
+**Descarga local.** Desde `fangchenliu/maskdp_data` (HF), solo
+`maskdp_train/{cheetah/expert/cheetah_run, walker/expert/walker_run,
+quadruped/expert/quadruped_run}`: 3 × 3.800 archivos, ~4,8 GB, en vez
+del dataset completo (~62 GB, ~99.000 archivos). La estructura coincide
+con la de Benjamín (`expert/<tarea>/train/episode_*_1000.npz`). Sin
+cuenta, HF corta la IP del cluster por exceso de peticiones (429) a los
+~375 archivos; con token de lectura no hay límite (~2,3 archivos/s, ~80
+min). Destino: `/home/belforin/MaskDP_bc/data/maskdp_data`.
+
+**Relanzamiento automático.** `slurm_bc/after_download_relaunch.sh`,
+desacoplado de la sesión (`setsid nohup`), log en
+`slurm_bc/logs/after_download_relaunch.log`:
+1. espera a que termine la descarga;
+2. si alguna carpeta tiene menos de 3.800 `.npz`, vuelve a llamar
+   `snapshot_download` (retoma), hasta 5 intentos;
+3. con las 3 carpetas completas, cambia `DMC_DATA` en `paths.sh` a la
+   copia local, libera 33223/33690/33501 y relanza las 4 fallidas con
+   `--qos=regular --exclude=yodaxico,antuco`.
+El token de HF va solo en el entorno del proceso y se borra antes de cada
+`sbatch`. Pendiente: revocar el token (quedó escrito en la conversación).
+
+**Estado de las corridas BC hier223 / enc128 (2026-10-21, 23:30):**
+- **Terminadas:** CoinRun completo (3 semillas × 2 variantes). Hier223:
+  cheetah s1, walker s1, quadruped s1. Enc128: cheetah s2, walker s1,
+  quadruped s1 y s3.
+- **En curso:** 33219 enc128 quadruped s2, 33221 hier223 cheetah s3, 33218
+  enc128 walker s2, 33417 enc128 walker s3 (`long`).
+- **Retenidas hasta la descarga:** 33223, 33690, 33501.
+- **A relanzar tras la descarga:** hier223 walker s3, hier223 cheetah s2,
+  enc128 cheetah s1 y s3.
+
+Commits en `MaskDP_bc`: los pendientes de §7.13, §7.15 y §7.16 (no
+estaban versionados) y `f54216e` (este arreglo).
 
 ## Resumen de próximos pasos concretos
 
