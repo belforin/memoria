@@ -61,6 +61,19 @@ def _with_n_embd(config, n_embd):
     return c
 
 
+def snapshot_cfg(config):
+    """copia de la config de un snapshot sin pretrained_encoder_path: los pesos
+    del encoder ya vienen en el state_dict, y la ruta guardada puede no ser
+    legible (la de bmancilla, tras el chmod 700 de los homes del 2026-10-21)"""
+    if _cfg(config, "pretrained_encoder_path", None) is None:
+        return config
+    if isinstance(config, DictConfig):
+        return OmegaConf.merge(config, {"pretrained_encoder_path": None})
+    c = copy.copy(config)
+    c.pretrained_encoder_path = None
+    return c
+
+
 class _Stack(nn.Module):
     """n_layer bloques causales sobre una secuencia de largo <= max_len"""
 
@@ -369,7 +382,7 @@ class BCAREvalAgent:
         if path is not None:
             print(f"[BCAREvalAgent] Loading snapshot: {path}")
             payload = torch.load(path, map_location=device)
-            self.config = payload["cfg"]
+            self.config = snapshot_cfg(payload["cfg"])
         else:
             assert transformer_cfg is not None, "Must provide either `path` or `transformer_cfg`."
             self.config = transformer_cfg

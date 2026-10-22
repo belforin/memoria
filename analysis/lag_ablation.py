@@ -42,12 +42,12 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from agent.bc_ar import BCARModel  # noqa: E402
+from agent.bc_ar import BCARModel, snapshot_cfg  # noqa: E402
 
 
 def load_model(path, device):
     payload = torch.load(path, map_location=device)
-    cfg = payload["cfg"]
+    cfg = snapshot_cfg(payload["cfg"])
     pixel = bool(cfg.get("use_pixel_obs", False))
     discrete = bool(cfg.get("discrete_actions", False))
     sd = payload["model"]

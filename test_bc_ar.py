@@ -16,7 +16,7 @@ sys.path.insert(0, ROOT)
 
 from agent.bc_ar import BCARAgent, BCAREvalAgent, BCARModel
 
-IMPALA_CKPT = "/home/bmancilla/archive/MaskDP/pretrained_encoders/procgen_coinrun_easy_encoder.pt"
+IMPALA_CKPT = "/mnt-homes/wapol/rexgliu/belforin/MaskDP_mmodal/pretrained_encoders/procgen_coinrun_easy_encoder.pt"
 torch.manual_seed(0)
 failures = []
 
