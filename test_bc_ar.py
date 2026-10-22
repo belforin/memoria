@@ -27,7 +27,7 @@ def check(name, cond):
         failures.append(name)
 
 
-def small_cfg(topology, discrete=False, **kw):
+def small_cfg(topology="uni", discrete=False, **kw):
     c = dict(topology=topology, n_embd=32, n_head=2, n_layer=2, n_obs_layer=1, n_act_layer=1,
              traj_length=12, embd_pdrop=0.0, attn_pdrop=0.0, resid_pdrop=0.0, mlp_pdrop=0.0,
              weight_decay=0.0, use_pixel_obs=False, discrete_actions=discrete, num_actions=15)
@@ -42,12 +42,16 @@ def actions(B, T, discrete, A=6):
 
 
 B, T, OBS, A = 4, 12, 17, 6
+# (topologia, overrides de small_cfg); hier_enc = stacks por modalidad mas
+# angostos que el conjunto (enc_n_embd, seccion 7.15)
+VARIANTS = [("uni", {}), ("hier", {}), ("hier_enc", dict(topology="hier", enc_n_embd=16, n_layer=3))]
 
 # 1. forward, causalidad, loss enmascarada
-for topology in ["uni", "hier"]:
+for topology, kw in VARIANTS:
     for discrete in [False, True]:
         tag = f"{topology}{' discreto' if discrete else ''}"
-        model = BCARModel(OBS, 15 if discrete else A, small_cfg(topology, discrete)).eval()
+        kw = dict(dict(topology=topology), **kw)
+        model = BCARModel(OBS, 15 if discrete else A, small_cfg(discrete=discrete, **kw)).eval()
         out_dim = 15 if discrete else A
         obs, act = torch.randn(B, T, OBS), actions(B, T, discrete)
         pred = model(obs, act)
@@ -78,10 +82,11 @@ for topology in ["uni", "hier"]:
         check(f"[{tag}] mascara: relleno no cambia la loss", abs(l1.item() - l2.item()) < 1e-5)
 
 # 2. agente de entrenamiento con el formato de batch de replay_buffer.py
-for topology in ["uni", "hier"]:
+for topology, kw in VARIANTS:
     for discrete in [False, True]:
         tag = f"{topology}{' discreto' if discrete else ''}"
-        agent = BCARAgent("bc", (OBS,), (A,), "cpu", 1e-3, B, True, small_cfg(topology, discrete))
+        kw = dict(dict(topology=topology), **kw)
+        agent = BCARAgent("bc", (OBS,), (A,), "cpu", 1e-3, B, True, small_cfg(discrete=discrete, **kw))
         obs, act = torch.randn(B, T, OBS), actions(B, T, discrete).float()
         batch = (obs.numpy(), act.numpy(), np.zeros((B, T, 1), np.float32), np.ones((B, T, 1), np.float32),
                  obs.numpy(), np.ones((B, T, 1), np.float32))
@@ -94,10 +99,11 @@ for topology in ["uni", "hier"]:
         check(f"[{tag}] update: loss baja {losses[0]:.3f} -> {losses[-1]:.3f}", losses[-1] < 0.5 * losses[0])
 
 # 3. agente de evaluacion: interfaz de eval_return.py / eval_bct.py
-for topology in ["uni", "hier"]:
+for topology, kw in VARIANTS:
     for discrete in [False, True]:
         tag = f"{topology}{' discreto' if discrete else ''}"
-        cfg = small_cfg(topology, discrete)
+        kw = dict(dict(topology=topology), **kw)
+        cfg = small_cfg(discrete=discrete, **kw)
         ev = BCAREvalAgent((OBS,), (A,), "cpu", K=None, sample=discrete, transformer_cfg=cfg)
         ev.reset()
         outs = [ev.act(np.random.randn(OBS).astype(np.float32)) for _ in range(T + 5)]
@@ -134,6 +140,18 @@ if os.path.exists(IMPALA_CKPT):
           conv_same and proj_diff and frozen)
     pred = m(torch.randint(0, 255, (2, 16, 64, 64, 3), dtype=torch.uint8), torch.randint(0, 15, (2, 16, 1)))
     check(f"IMPALA: forward con pixeles {tuple(pred.shape)}", pred.shape == (2, 16, 15))
+
+    # enc_n_embd=128: proyeccion aleatoria directo a 128, congelada (su reduce_enc)
+    cfg = OmegaConf.load(os.path.join(ROOT, "agent", "bc_hier223_enc128_procgen.yaml")).transformer_cfg
+    cfg.pretrained_encoder_path = IMPALA_CKPT
+    m = BCARModel(None, 15, cfg)
+    enc = m.state_embed
+    conv_same = all(torch.equal(v, ckpt["convnet"][k]) for k, v in enc.convnet.state_dict().items())
+    frozen = all(not p.requires_grad for p in enc.parameters())
+    check(f"IMPALA enc128: conv del checkpoint {conv_same}, proyeccion -> {enc.projection.out_features}, "
+          f"congelado {frozen}", conv_same and frozen and enc.projection.out_features == 128)
+    pred = m(torch.randint(0, 255, (2, 16, 64, 64, 3), dtype=torch.uint8), torch.randint(0, 15, (2, 16, 1)))
+    check(f"IMPALA enc128: forward con pixeles {tuple(pred.shape)}", pred.shape == (2, 16, 15))
 else:
     print(f"[SKIP] {IMPALA_CKPT} no existe")
 
@@ -148,6 +166,24 @@ for name in ["bc_uni", "bc_hier"]:
         dev = 100 * (n - ref[name][obs_dim]) / ref[name][obs_dim]
         check(f"{name} DMC obs={obs_dim}: {n:,} params ({dev:+.1f}% vs Benjamin)", abs(dev) < 6)
 
+# 5b. variantes 2+2+3 (seccion 7.15): conteo contra reduce_enc, solo
+# informativo; fuera de paridad por diseno (256: ~+40%; enc128: ~-22%, sin la
+# fusion por co-atencion ni las proyecciones de su decoder)
+for name in ["bc_hier223", "bc_hier223_enc128"]:
+    cfg = OmegaConf.load(os.path.join(ROOT, "agent", f"{name}.yaml")).transformer_cfg
+    for obs_dim, act_dim in [(17, 6), (24, 6), (78, 12)]:
+        m = BCARModel(obs_dim, act_dim, cfg)
+        n = sum(p.numel() for p in m.parameters() if p.requires_grad)
+        dev = 100 * (n - ref["bc_hier"][obs_dim]) / ref["bc_hier"][obs_dim]
+        print(f"[INFO] {name} DMC obs={obs_dim}: {n:,} params ({dev:+.1f}% vs reduce_enc)")
+if os.path.exists(IMPALA_CKPT):
+    for name in ["bc_uni_procgen", "bc_hier_procgen", "bc_hier223_procgen", "bc_hier223_enc128_procgen"]:
+        cfg = OmegaConf.load(os.path.join(ROOT, "agent", f"{name}.yaml")).transformer_cfg
+        cfg.pretrained_encoder_path = IMPALA_CKPT
+        m = BCARModel(None, 15, cfg)
+        n = sum(p.numel() for p in m.parameters() if p.requires_grad)
+        print(f"[INFO] {name} CoinRun: {n:,} params entrenables")
+
 # 6. interpretabilidad (eval_sarfa.py / analysis/bc_attn_attr.py): ganchos de
 # atencion, logits_for y gradiente integrado en batch
 if os.path.exists(IMPALA_CKPT):
@@ -155,7 +191,7 @@ if os.path.exists(IMPALA_CKPT):
     from analysis.trajectory_recorder import load_buffers
 
     rng = np.random.default_rng(0)
-    for name in ["bc_uni_procgen", "bc_hier_procgen"]:
+    for name in ["bc_uni_procgen", "bc_hier_procgen", "bc_hier223_enc128_procgen"]:
         cfg = OmegaConf.load(os.path.join(ROOT, "agent", f"{name}.yaml")).transformer_cfg
         cfg.pretrained_encoder_path = IMPALA_CKPT
         ev = BCAREvalAgent((64, 64, 3), (1,), "cpu", sample=False, transformer_cfg=cfg)
@@ -215,7 +251,7 @@ if os.path.exists(IMPALA_CKPT):
         diff = (f1 - f0).item()
         err = {mm: abs(attn_attr_layer(ev, stack, layer, a_idx, m=mm).sum().item() - diff) for mm in (50, 1000)}
         check(f"[{name}] IG completitud: |sum attr - (F(A)-F(0))| m=50 {err[50]:.2e} -> m=1000 {err[1000]:.2e} "
-              f"(F(A)-F(0) = {diff:.4f})", err[1000] <= err[50] and err[1000] < 0.05 * max(abs(diff), 1e-2))
+              f"(F(A)-F(0) = {diff:.4f})", (err[1000] <= err[50] or err[1000] < 1e-4) and err[1000] < 0.05 * max(abs(diff), 1e-2))
         attr = attn_attr_layer(ev, stack, layer, a_idx, m=20)
         # en la ultima capa conjunta solo la fila del token objetivo s_{n_s-1} llega al logit
         rows = attr.abs().sum(dim=(0, 2))

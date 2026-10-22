@@ -10,7 +10,10 @@ Topologias (transformer_cfg.topology):
 - "uni":  un solo stack causal sobre (s_1, a_1, s_2, a_2, ...).
 - "hier": un stack causal por modalidad (n_obs_layer sobre los estados,
           n_act_layer sobre las acciones), despues se intercalan y pasan por
-          n_layer bloques causales conjuntos.
+          n_layer bloques causales conjuntos. Con enc_n_embd < n_embd los
+          stacks por modalidad (y sus embeddings) van a ese ancho y se
+          proyectan a n_embd antes de intercalar (LayerNorm + Linear), como
+          el reduce_enc de Benjamin (enc_n_embd=128, agent/mdp.py).
 En ambas la accion a_t se predice desde el token s_t: ve s_1..s_t y
 a_1..a_{t-1}.
 
@@ -30,12 +33,14 @@ Clases:
   (Procgen): .mdp, .reset(), .act(obs), .eval(); ventana deslizante de K
   pasos, a_t desde s_t en cada paso (closed-loop).
 """
+import copy
 from collections import deque
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from omegaconf import DictConfig, OmegaConf
 
 import utils
 from agent.modules.attention import Block
@@ -45,6 +50,15 @@ from agent.modules.pixel_encoder import PixelEncoder
 
 def _cfg(config, key, default):
     return config.get(key, default) if hasattr(config, "get") else getattr(config, key, default)
+
+
+def _with_n_embd(config, n_embd):
+    """copia de la config con otro n_embd (los Block leen config.n_embd)"""
+    if isinstance(config, DictConfig):
+        return OmegaConf.merge(config, {"n_embd": n_embd})
+    c = copy.copy(config)
+    c.n_embd = n_embd
+    return c
 
 
 class _Stack(nn.Module):
@@ -80,6 +94,11 @@ class BCARModel(nn.Module):
         self.topology = str(_cfg(config, "topology", "uni"))
         assert self.topology in ("uni", "hier"), self.topology
         self.n_embd = config.n_embd
+        # ancho de los tokens antes del stack conjunto (stacks por modalidad
+        # en hier); en uni siempre n_embd
+        self.enc_n_embd = int(_cfg(config, "enc_n_embd", None) or self.n_embd)
+        assert self.topology == "hier" or self.enc_n_embd == self.n_embd, "enc_n_embd solo aplica a hier"
+        D = self.enc_n_embd
         self.traj_length = config.traj_length
         self.pixel_obs = bool(_cfg(config, "use_pixel_obs", False))
         self.discrete_actions = bool(_cfg(config, "discrete_actions", False))
@@ -87,17 +106,17 @@ class BCARModel(nn.Module):
 
         if self.pixel_obs:
             self.state_embed = PixelEncoder(
-                tuple(config.pixel_obs_shape), self.n_embd,
+                tuple(config.pixel_obs_shape), D,
                 encoder_type=str(_cfg(config, "pixel_encoder_type", "procgen_impala")),
             )
         else:
-            self.state_embed = nn.Linear(obs_dim, self.n_embd)
+            self.state_embed = nn.Linear(obs_dim, D)
 
         if self.discrete_actions:
-            self.action_embed = nn.Embedding(int(config.num_actions), self.n_embd)
+            self.action_embed = nn.Embedding(int(config.num_actions), D)
             head_out, head_act = int(config.num_actions), []
         else:
-            self.action_embed = nn.Linear(action_dim, self.n_embd)
+            self.action_embed = nn.Linear(action_dim, D)
             head_out, head_act = action_dim, [nn.Tanh()]
 
         T = self.traj_length
@@ -107,10 +126,17 @@ class BCARModel(nn.Module):
         else:
             # cada stream de modalidad tiene su propia posicion, igual que
             # SequenceEncoding en agent/sequence_encoding.py de belforin/memoria
-            self.obs_pos_embed = nn.Embedding(T, self.n_embd)
-            self.act_pos_embed = nn.Embedding(T, self.n_embd)
-            self.obs_stack = _Stack(config, config.n_obs_layer, T)
-            self.act_stack = _Stack(config, config.n_act_layer, T)
+            enc_config = config if D == self.n_embd else _with_n_embd(config, D)
+            self.obs_pos_embed = nn.Embedding(T, D)
+            self.act_pos_embed = nn.Embedding(T, D)
+            self.obs_stack = _Stack(enc_config, config.n_obs_layer, T)
+            self.act_stack = _Stack(enc_config, config.n_act_layer, T)
+            if D == self.n_embd:
+                self.obs_proj = self.act_proj = nn.Identity()
+            else:
+                # state_encoder_norm + state_proj de su agent/mdp.py
+                self.obs_proj = nn.Sequential(nn.LayerNorm(D), nn.Linear(D, self.n_embd))
+                self.act_proj = nn.Sequential(nn.LayerNorm(D), nn.Linear(D, self.n_embd))
             self.stack = _Stack(config, config.n_layer, 2 * T)
 
         self.action_head = nn.Sequential(
@@ -125,7 +151,9 @@ class BCARModel(nn.Module):
         # impala_projection="random" (default): solo las convoluciones vienen
         # del checkpoint; la proyeccion lineal queda con su init Xavier y
         # congelada, igual que todas las variantes de la tesis de Benjamin
-        # (seccion 3.4.2; METODOLOGIA_DT_HDT.md seccion 7.6).
+        # (seccion 3.4.2; METODOLOGIA_DT_HDT.md seccion 7.6). Con
+        # enc_n_embd=128 la proyeccion aleatoria va directo a 128, como su
+        # reduce_enc.
         ckpt = _cfg(config, "pretrained_encoder_path", None)
         if self.pixel_obs and ckpt:
             random_proj = str(_cfg(config, "impala_projection", "random")) == "random"
@@ -147,7 +175,7 @@ class BCARModel(nn.Module):
 
     def embed_obs(self, obs):
         # obs de pixeles ya pasadas por el encoder congelado (embeddings
-        # precalculados): (B, T, n_embd) float, se usan tal cual
+        # precalculados): (B, T, enc_n_embd) float, se usan tal cual
         if self.pixel_obs and obs.dim() == 3:
             return obs.float()
         if self.pixel_obs:
@@ -176,6 +204,26 @@ class BCARModel(nn.Module):
                 devuelve (pred, att) en vez de pred.
         return: (B, T, action_dim) acciones o (B, T, num_actions) logits
         """
+        s, a = self.embed_tokens(obs, action)
+        return self.forward_tokens(s, a, attr=attr)
+
+    def embed_tokens(self, obs, action):
+        """
+        Tokens de entrada (antes de la posicion): s (B, T, enc_n_embd) y a
+        (B, T, enc_n_embd), con a rellenado con ceros hasta T. Separado de
+        forward_tokens para atribuir sobre los embeddings de entrada
+        (analysis/input_attribution.py).
+        """
+        B, T = obs.shape[0], obs.shape[1]
+        s = self.embed_obs(obs)
+        D = self.enc_n_embd
+        a = self.embed_actions(action) if action.shape[1] > 0 else s.new_zeros(B, 0, D)
+        if a.shape[1] < T:
+            a = torch.cat([a, a.new_zeros(B, T - a.shape[1], D)], dim=1)
+        return s, a
+
+    def forward_tokens(self, s, a, attr=None):
+        """forward desde los tokens de embed_tokens; mismos argumentos y salida que forward"""
         hook = {"joint": None, "obs": None, "act": None}
         if attr is not None:
             stack, layer, tmp_att, capture_att = attr
@@ -190,19 +238,15 @@ class BCARModel(nn.Module):
             x, att = stack_mod(x, **hook[name])
             return x
 
-        B, T = obs.shape[0], obs.shape[1]
-        s = self.embed_obs(obs)
-        a = self.embed_actions(action) if action.shape[1] > 0 else s.new_zeros(B, 0, self.n_embd)
-        if a.shape[1] < T:
-            a = torch.cat([a, a.new_zeros(B, T - a.shape[1], self.n_embd)], dim=1)
+        B, T = s.shape[0], s.shape[1]
 
         pos = torch.arange(T, device=s.device)
         if self.topology == "uni":
             s = s + self.pos_embed(pos)
             a = a + self.pos_embed(pos)
         else:
-            s = run(self.obs_stack, "obs", s + self.obs_pos_embed(pos))
-            a = run(self.act_stack, "act", a + self.act_pos_embed(pos))
+            s = self.obs_proj(run(self.obs_stack, "obs", s + self.obs_pos_embed(pos)))
+            a = self.act_proj(run(self.act_stack, "act", a + self.act_pos_embed(pos)))
 
         x = torch.stack([s, a], dim=2).reshape(B, 2 * T, self.n_embd)
         x = run(self.stack, "joint", self.drop(x))
