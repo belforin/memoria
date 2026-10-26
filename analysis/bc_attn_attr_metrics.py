@@ -32,6 +32,7 @@ Uso:
 import argparse
 import csv
 import json
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -150,9 +151,11 @@ def main():
         for r in per_seed:
             w.writerow([r["model_name"], r["topology"], r["n_states"]] + [f"{r[k]:.6g}" for k in SCALARS])
 
+    # Agrupa por modelo (nombre sin _s<semilla>), no por topologia: bc_hier,
+    # bc_hier223 y bc_hier223_enc128 son todos "hier" pero con capas distintas.
     by_topo = defaultdict(list)
     for r in per_seed:
-        by_topo[r["topology"]].append(r)
+        by_topo[re.sub(r"_s\d+$", "", r["model_name"])].append(r)
     lines = []
     for topo, rs in sorted(by_topo.items()):
         lines.append(f"== {topo} ({len(rs)} semillas: {', '.join(r['model_name'] for r in rs)})")
