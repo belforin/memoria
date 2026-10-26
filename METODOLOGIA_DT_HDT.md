@@ -3822,8 +3822,495 @@ El token de HF va solo en el entorno del proceso y se borra antes de cada
 - **A relanzar tras la descarga:** hier223 walker s3, hier223 cheetah s2,
   enc128 cheetah s1 y s3.
 
+**Seguimiento (2026-10-22).** La descarga terminó completa (3 × 3.800
+`.npz`, 4,9 GB) y el relanzamiento automático corrió a las 00:50 (33818-33821).
+La 33818 (hier223 walker s3) cayó en una GTX 1080 Ti de scylla: 3,49 it/s
+frente a ~5,7 en 2080 Ti, ~32 h para 400k pasos, sobre el límite de 24 h.
+Se canceló en el paso ~73k (workspace movido a `..._1080ti_33818`) y se
+relanzó como **33829** con `--gres=gpu:2080_ti:1`. Scylla tiene 4 × 1080 Ti
+y 3 × 2080 Ti. Para no repetirlo, las pendientes que no son quadruped
+(33829, 33819-33821, 33501) quedan con `gpu:1` y excluyen scylla, yodaxico
+y antuco (pueden ir a ventress, llaima o hydra). Las quadruped siguen solo en
+hydra/llaima; la 33223 arrancó en hydra a las 06:47 con el cupo de la 33818.
+
+**Walker hier223 s2 (33501) no alcanza las 24 h; resume desde 350k
+(2026-10-22, 21:38).** Corre en ventress (`long`) junto con las 2 cheetah
+enc128 (33819, 33820). Va a un ritmo estable de 4,5 it/s, frente a ~5,6 de
+las otras corridas: 143k pasos en 8,8 h, ~24,8 h para 400k. El corte llegará
+cerca del paso ~388k (límite: 2026-10-23 12:43). El snapshot de 350k se
+guarda a las ~21,6 h, antes del corte. No se pudo subir el límite a 26 h:
+`scontrol update TimeLimit` responde `Access/permission denied`, porque un
+usuario solo puede bajarlo. Quedó encolado el **33922**
+(`..._walker_run_s2_resume350k`, `RESUME_STEP=350000`,
+`--dependency=afternotok:33501`, `gpu:1` en ialab-low excluyendo antuco y
+yodaxico). Solo corre si la 33501 falla o la corta el límite de tiempo; si
+termina a tiempo, Slurm lo cancela. Logs en
+`bc_hier223_walker_run_s2_resume350000/`. El `snapshot_400000.pt` queda en
+el directorio de siempre (`snapshot/.../bc_hier223/walker/2/`), así que la
+evaluación no cambia.
+
+*Ventress es ~20 % más lento que hydra* en todos los modelos DMC: enc128
+va a 5,6 it/s en ventress frente a ~7 en hydra (15,9 h), y hier223 completo
+a 4,5 frente a ~5,6 (19,7 h). Por eso enc128 termina en ventress (~20 h),
+pero hier223 completo (~24,7 h) no. Las pendientes hier223 completas de
+DMC (33821 cheetah s2, 33829 walker s3) excluyen además ventress, así que
+quedan con hydra y llaima. El 33922 sí puede ir a ventress, porque son
+solo 50k pasos (~3 h). CoinRun no se ve afectado.
+
+*Desviación metodológica.* El snapshot guarda solo `model` y `cfg`, no el
+estado del optimizador. Al retomar se restauran los pesos y el paso, pero
+**AdamW parte de cero** en los últimos 50k pasos de esta semilla (12,5 %
+del entrenamiento). Se espera que el efecto sea menor:
+- lr constante 1e-4, sin scheduler ni warmup (`agent/bc_hier223.yaml`): no
+  se desfasa ningún calendario de lr;
+- `weight_decay=0`: AdamW equivale a Adam;
+- con la corrección de sesgo, el primer paso es ≈ `lr·sign(g)`, como mucho
+  1e-4 por parámetro, del mismo orden que un paso normal;
+- el segundo momento (β₂=0,999) se reestima en ~1k pasos. Durante ese lapso
+  los parámetros con gradientes chicos pueden dar pasos algo mayores. Se
+  espera un repunte breve del `action_loss` (~cientos a ~2k pasos) desde un
+  loss ya plano (~0,017).
+
+**Verificación pendiente:** comparar `action_loss` entre 350k y 400k de la
+s2 retomada con s1 y s3 (sin corte) y, si el repunte es chico y breve,
+tratar la s2 igual que las demás semillas.
+
 Commits en `MaskDP_bc`: los pendientes de §7.13, §7.15 y §7.16 (no
 estaban versionados) y `f54216e` (este arreglo).
+
+### 7.18 Fin de las 24 corridas hier223 / enc128 y lanzamiento de evaluación e interpretabilidad (2026-10-24)
+
+Las 24 corridas de §7.15 terminaron. Los 24 snapshots finales existen
+(400k en DMC, 781.250 en CoinRun). La última fue 33829 (hier223 walker s3),
+a las 00:33. La 33501 (walker hier223 s2) llegó a 388k y la cortó el límite
+de tiempo; la 33922 retomó desde 350k y terminó en 4 h.
+
+**Verificación del resume (walker hier223 s2).** `action_loss` promedio por
+tramo (el log guarda una fila cada 1k pasos):
+
+| tramo | s1 | s2 original | s2 retomada | s3 |
+|---|---|---|---|---|
+| 340-350k | 0,0139 | 0,0143 | — | 0,0140 |
+| 350-351k | 0,0138 | 0,0143 | 0,0142 | 0,0140 |
+| 351-356k | 0,0138 | 0,0143 | 0,0143 | 0,0140 |
+| 360-370k | 0,0137 | 0,0142 | 0,0142 | 0,0139 |
+| 385-400k | 0,0135 | 0,0140 | 0,0140 | 0,0137 |
+
+No hay repunte visible con una fila cada 1k pasos. La s2 retomada sigue la
+misma curva que la s2 original hasta 388k. **La s2 se trata igual que las
+otras semillas.**
+
+**Lanzado (2026-10-24), todo con `--exclude=yodaxico,antuco`.** Se
+agrupan las combinaciones en un job por lanzador, como antes. Solo se
+separa lo que no cabe en 24 h (una evaluación DMC de 100 episodios toma
+~10,6 min, según el job 30866).
+- Retorno: hier223 en DMC quedó en 3 jobs, uno por tarea (34121-34123, ya
+  corriendo al reagrupar). enc128 DMC en un job (34143). CoinRun: 34124
+  (hier223) y 34128 (enc128).
+- SARFA + AttAttr en CoinRun (§7.11): `interp_bc_procgen.sbatch` con las
+  dos variantes en un job (34144).
+- Métrica 2 (lag ablation, 34131) y métrica 4 (IG + AOPC, 34132) con
+  `AGENTS="bc_hier223 bc_hier223_enc128"`, solo para cheetah_run,
+  walker_run y CoinRun. **Quadruped va aparte**: las dos métricas leen
+  ventanas de `expert/quadruped_walk`, que no está en la copia local
+  (§7.17), y bc_uni/bc_hier se calcularon con esas ventanas. Decisión del
+  usuario: bajar solo `expert/quadruped_walk` de HF y correr ahí.
+- Métrica 1 (curva de contexto) con los 4 agentes. Cada K de DMC son 36
+  evaluaciones (~6,5 h), así que van de a 1 o 2 K por job: K=1 (34133,
+  `long`), K ∈ {2, 4} (34145), K ∈ {8, 16} (34146) y K=32 (34147, `long`).
+  CoinRun K ∈ {1, 2, 4, 8} en un job (34148). Son `sbatch --wrap` que
+  llaman `eval_bc_{dmc,procgen}.sbatch` con `EVAL_K` en un loop. K
+  completa es la evaluación estándar de arriba (y la de §7.10 para
+  bc_uni/bc_hier).
+
+### 7.19 Resultados de `bc_hier223` / `bc_hier223_enc128` y curva de contexto (2026-10-25)
+
+Todos los jobs de §7.18 terminaron (COMPLETED, sin errores en los `.err`
+salvo los avisos conocidos de `nanmean` sobre retrasos sin datos). El
+último fue 34147 (K = 32), a las 10:51 del 2026-10-25. Logs en
+`~/MaskDP_bc/slurm_bc/logs/`. Como en §7.10, las tablas de retorno usan
+la línea `return=` (media de 100 episodios), no `raw_return=` (último
+episodio). Media ± desviación muestral sobre 3 semillas.
+
+#### 7.19.1 Retorno con ventana completa (los cuatro modelos)
+
+**DMC** (snapshot 400k, 100 episodios, K = 64; BC-uni/BC-hier de §7.10):
+
+| | cheetah_run | walker_run | quadruped_walk | Params (cheetah) |
+|---|---|---|---|---|
+| BC-uni | 780,2 ± 10,5 | 761,6 ± 0,8 | 918,6 ± 3,9 | – |
+| BC-hier (2+2+1) | 784,4 ± 5,5 | 766,4 ± 2,6 | 917,2 ± 1,1 | 3,99 M |
+| `bc_hier223` | 772,6 ± 1,7 | 756,5 ± 1,1 | 918,0 ± 13,4 | 5,57 M |
+| `bc_hier223_enc128` | 791,8 ± 7,5 | 761,0 ± 3,1 | 919,5 ± 3,9 | 3,25 M |
+
+Por semilla (s1/s2/s3): `bc_hier223` cheetah 774,6/771,2/772,1, walker
+755,7/756,0/757,8, quadruped 914,5/906,7/932,8; `bc_hier223_enc128`
+cheetah 784,6/791,2/799,6, walker 763,0/757,5/762,6, quadruped
+922,2/915,0/921,2. Jobs 34121-34123 (hier223) y 34143 (enc128).
+
+**CoinRun** (época 50, 100 episodios por split, T = 1, retorno bruto;
+jobs 34124 y 34128):
+
+| | Train | Val | Test |
+|---|---|---|---|
+| BC-uni | 9,20 ± 0,26 | 8,20 ± 0,52 | 8,20 ± 0,26 |
+| BC-hier | 9,30 ± 0,17 | 7,73 ± 0,21 | 7,97 ± 0,32 |
+| `bc_hier223` | 9,13 ± 0,31 | 7,67 ± 0,59 | 8,13 ± 0,15 |
+| `bc_hier223_enc128` | 9,00 ± 0,52 | 8,10 ± 0,46 | 8,43 ± 0,32 |
+| Benjamín reduce_enc | 9,47 ± 0,50 | – | 8,93 ± 0,31 |
+
+Por semilla (train/val/test): `bc_hier223` 9,4/7,9/8,1, 8,8/8,1/8,0,
+9,2/7,0/8,3; `bc_hier223_enc128` 9,3/8,2/8,2, 9,3/7,6/8,8, 8,4/8,5/8,3.
+
+**Lectura:**
+1. **Igualar la profundidad (2+2+3) no mejora el retorno.** En DMC,
+   `bc_hier223` queda *por debajo* de BC-hier en cheetah (772,6 vs. 784,4)
+   y walker (756,5 vs. 766,4), con desviaciones chicas (1-3), así que la
+   diferencia es consistente entre semillas. Es el modelo más grande
+   (+40% sobre BC-hier); la curva de contexto (abajo) muestra que con
+   K ≤ 8 queda en el rango de los demás modelos, así que lo que pierde es
+   con ventanas largas.
+2. `bc_hier223_enc128` (los anchos de Benjamín) empata o supera a BC-hier:
+   el mejor en cheetah (791,8) y en CoinRun test (8,43), aunque la
+   diferencia en CoinRun es del orden del error estándar por evaluación
+   (~0,4, §7.10). Sigue ~0,5 puntos por debajo de `reduce_enc` en CoinRun
+   test (8,43 vs. 8,93): **la ventaja de generalización de su jerárquico
+   tampoco aparece con la misma profundidad y anchos**, salvo la fusión
+   por co-atención, que no se agregó (§7.15).
+3. Quadruped: los cuatro empatan (917-920); la s3 de `bc_hier223` (932,8)
+   infla su desviación.
+
+#### 7.19.2 Métrica 1 — curva de contexto (los cuatro modelos)
+
+Mismo protocolo que la evaluación estándar (snapshot final, 100 episodios,
+semilla de evaluación = semilla de entrenamiento), cambiando solo la
+ventana de evaluación `agent.K`. "full" = 64 en DMC y 16 en CoinRun (las
+tablas de arriba). Jobs 34133, 34145-34148.
+
+**DMC** (retorno, media ± desviación muestral sobre 3 semillas):
+
+| Tarea | Modelo | K=1 | 2 | 4 | 8 | 16 | 32 | full (64) |
+|---|---|---|---|---|---|---|---|---|
+| cheetah | BC-uni | 778,2 ± 10,6 | 778,2 ± 5,7 | 781,6 ± 6,0 | 784,9 ± 7,0 | 779,6 ± 2,7 | 773,8 ± 4,6 | 780,2 ± 10,5 |
+| cheetah | BC-hier | 795,4 ± 4,2 | 792,0 ± 4,5 | 793,6 ± 3,0 | 794,0 ± 0,9 | 794,8 ± 2,3 | 790,7 ± 2,2 | 784,4 ± 5,5 |
+| cheetah | `bc_hier223` | 786,0 ± 5,0 | 781,3 ± 6,6 | 784,3 ± 4,7 | 787,2 ± 2,3 | 784,1 ± 3,4 | 774,2 ± 3,8 | 772,6 ± 1,7 |
+| cheetah | `bc_hier223_enc128` | 794,4 ± 13,5 | 792,3 ± 14,1 | 790,2 ± 3,3 | 794,3 ± 5,1 | 792,8 ± 11,9 | 786,1 ± 5,8 | 791,8 ± 7,5 |
+| walker | BC-uni | 764,8 ± 9,4 | 770,5 ± 1,6 | 768,2 ± 1,2 | 764,7 ± 0,7 | 763,4 ± 1,3 | 758,8 ± 4,3 | 761,6 ± 0,8 |
+| walker | BC-hier | 765,0 ± 4,9 | 770,7 ± 2,1 | 770,2 ± 3,3 | 770,2 ± 2,9 | 768,2 ± 2,8 | 767,8 ± 1,8 | 766,4 ± 2,6 |
+| walker | `bc_hier223` | 768,4 ± 2,6 | 769,5 ± 2,5 | 770,2 ± 2,1 | 768,9 ± 1,7 | 760,9 ± 1,4 | 755,5 ± 1,2 | 756,5 ± 1,1 |
+| walker | `bc_hier223_enc128` | 768,5 ± 3,8 | 768,7 ± 1,4 | 768,5 ± 2,2 | 768,2 ± 2,7 | 765,6 ± 1,0 | 760,5 ± 3,3 | 761,0 ± 3,1 |
+| quadruped | BC-uni | 907,3 ± 14,6 | 917,0 ± 5,3 | 916,3 ± 6,8 | 923,7 ± 2,3 | 920,7 ± 1,2 | 920,5 ± 3,3 | 918,6 ± 3,9 |
+| quadruped | BC-hier | 895,0 ± 5,9 | 909,1 ± 8,2 | 908,3 ± 12,8 | 924,5 ± 5,8 | 916,3 ± 6,0 | 909,9 ± 11,5 | 917,2 ± 1,1 |
+| quadruped | `bc_hier223` | 896,7 ± 10,1 | 918,8 ± 14,1 | 906,6 ± 12,9 | 920,8 ± 7,3 | 918,1 ± 7,8 | 920,8 ± 7,4 | 918,0 ± 13,4 |
+| quadruped | `bc_hier223_enc128` | 901,5 ± 11,1 | 915,6 ± 10,6 | 917,9 ± 1,3 | 913,3 ± 3,3 | 918,4 ± 2,6 | 923,3 ± 4,3 | 919,5 ± 3,9 |
+
+**CoinRun** (retorno bruto en test; train y val abajo):
+
+| Modelo | K=1 | 2 | 4 | 8 | full (16) |
+|---|---|---|---|---|---|
+| BC-uni | 8,53 ± 0,51 | 7,97 ± 0,06 | 7,97 ± 0,49 | 7,73 ± 0,06 | 8,20 ± 0,26 |
+| BC-hier | 8,27 ± 0,32 | 8,37 ± 0,25 | 8,23 ± 0,31 | 8,17 ± 0,50 | 7,97 ± 0,32 |
+| `bc_hier223` | 8,43 ± 0,12 | 8,33 ± 0,25 | 8,33 ± 0,21 | 8,60 ± 0,40 | 8,13 ± 0,15 |
+| `bc_hier223_enc128` | 8,07 ± 0,21 | 8,13 ± 0,42 | 8,10 ± 0,50 | 8,50 ± 0,00 | 8,43 ± 0,32 |
+
+Train (K = 1/2/4/8/full): BC-uni 8,87/9,30/9,23/9,53/9,20; BC-hier
+9,13/9,53/9,53/9,37/9,30; `bc_hier223` 9,20/9,13/9,37/9,60/9,13;
+`bc_hier223_enc128` 8,90/9,23/9,53/9,30/9,00. Val: BC-uni
+7,83/8,17/8,00/8,00/8,20; BC-hier 7,57/7,50/7,97/7,87/7,73;
+`bc_hier223` 7,63/8,23/7,90/8,13/7,67; `bc_hier223_enc128`
+7,30/8,10/7,53/7,90/8,10.
+
+**Lectura:**
+1. **Ningún modelo necesita la historia larga para rendir.** En cheetah y
+   walker, K = 1 (solo el estado actual, sin acciones pasadas) rinde igual
+   o mejor que la ventana completa en los cuatro modelos. En CoinRun las
+   diferencias entre K son del orden del error estándar (~0,4) y no tienen
+   tendencia. Solo quadruped pierde con K = 1 (−10 a −22 puntos, ~1-2%), y
+   desde K = 8 queda en el nivel de la ventana completa.
+2. **En walker (y en menor medida cheetah) las ventanas largas empeoran
+   el retorno.** Las curvas tienen el máximo en K = 2-8 y bajan desde
+   K = 16. El efecto es mayor en `bc_hier223` (walker 770,2 en K = 4 →
+   756,5 en K = 64; cheetah 787,2 → 772,6), lo que explica su peor retorno
+   con la ventana completa en §7.19.1. En walker, BC-hier es el que menos
+   pierde (770,7 → 766,4); en cheetah pierde ~11 puntos (795,4 → 784,4).
+3. **Relación con las métricas 2 y 4:** esas métricas muestran que los
+   modelos jerárquicos *usan* las acciones pasadas (al intervenirlas cambia
+   la predicción, §7.16.2 y abajo). La curva de contexto muestra que
+   *quitarlas* (K = 1) no baja el retorno en lazo cerrado. Usar la
+   historia no implica necesitarla: la información de las acciones pasadas
+   es redundante con el estado actual en estas tareas de control
+   totalmente observables (en quadruped, `quadruped_walk` evaluado con un
+   modelo entrenado en `quadruped_run`, la historia corta sí ayuda).
+4. Para la comparación de topologías, la curva no separa uni de hier: las
+   diferencias entre modelos en el mismo K son del tamaño de la desviación
+   entre semillas, salvo la caída de `bc_hier223` con K ≥ 16.
+
+#### 7.19.3 Métrica 2 — intervención por retraso (los cuatro modelos)
+
+Jobs 34131 (cheetah, walker, CoinRun) y 34151 (quadruped, con
+`expert/quadruped_walk` bajado de HF, §7.18). Mismas 512 ventanas y
+donantes que §7.16.2. Media ± desviación (poblacional, la de
+`lag_ablation_summary.py`) sobre 3 semillas. Distancia: RMS en DMC, KL en
+CoinRun. Filas de BC-uni/BC-hier repetidas de §7.16.2.
+
+| Tarea | Modelo | d(s_t) | d(todos los s pasados) | d(todas las a pasadas) | frac_action_past | mean_lag_past | lag_90 |
+|---|---|---|---|---|---|---|---|
+| cheetah | BC-uni | 0,793 ± 0,003 | 0,225 ± 0,005 | 0,149 ± 0,000 | 0,37 ± 0,00 | 11,2 ± 0,2 | 21 / 64 |
+| cheetah | BC-hier | 0,789 ± 0,003 | 0,267 ± 0,004 | 0,162 ± 0,001 | 0,70 ± 0,01 | 12,3 ± 0,4 | 22,7 / 64 |
+| cheetah | `bc_hier223` | 0,794 ± 0,002 | 0,296 ± 0,006 | 0,198 ± 0,002 | 0,66 ± 0,00 | 12,8 ± 0,3 | 24,7 / 64 |
+| cheetah | `bc_hier223_enc128` | 0,791 ± 0,001 | 0,261 ± 0,011 | 0,160 ± 0,001 | 0,53 ± 0,01 | 11,5 ± 0,0 | 22 / 64 |
+| walker | BC-uni | 0,948 ± 0,003 | 0,183 ± 0,002 | 0,132 ± 0,002 | 0,39 ± 0,01 | 9,7 ± 0,1 | 17 / 64 |
+| walker | BC-hier | 0,950 ± 0,000 | 0,110 ± 0,003 | 0,146 ± 0,004 | 0,82 ± 0,01 | 10,5 ± 0,3 | 19 / 64 |
+| walker | `bc_hier223` | 0,949 ± 0,002 | 0,155 ± 0,002 | 0,174 ± 0,001 | 0,77 ± 0,01 | 11,5 ± 0,3 | 22 / 64 |
+| walker | `bc_hier223_enc128` | 0,948 ± 0,001 | 0,153 ± 0,001 | 0,133 ± 0,001 | 0,63 ± 0,01 | 11,0 ± 0,1 | 20 / 64 |
+| quadruped | BC-uni | 0,997 ± 0,004 | 0,278 ± 0,004 | 0,136 ± 0,011 | 0,30 ± 0,02 | 13,5 ± 0,4 | 26,3 / 64 |
+| quadruped | BC-hier | 0,977 ± 0,007 | 0,295 ± 0,006 | 0,298 ± 0,013 | 0,63 ± 0,02 | 8,9 ± 0,3 | 17,3 / 64 |
+| quadruped | `bc_hier223` | 0,975 ± 0,004 | 0,292 ± 0,013 | 0,282 ± 0,005 | 0,58 ± 0,02 | 10,1 ± 0,2 | 20,3 / 64 |
+| quadruped | `bc_hier223_enc128` | 1,008 ± 0,005 | 0,252 ± 0,016 | 0,202 ± 0,015 | 0,57 ± 0,04 | 12,7 ± 0,4 | 24,7 / 64 |
+| CoinRun | BC-uni | 2,90 ± 0,14 | 1,93 ± 0,09 | 2,95 ± 0,04 | 0,82 ± 0,02 | 2,85 ± 0,06 | 4,3 / 16 |
+| CoinRun | BC-hier | 2,72 ± 0,07 | 0,94 ± 0,07 | 1,75 ± 0,02 | 0,72 ± 0,03 | 3,72 ± 0,17 | 5,7 / 16 |
+| CoinRun | `bc_hier223` | 3,38 ± 0,09 | 1,19 ± 0,04 | 2,73 ± 0,02 | 0,80 ± 0,05 | 3,14 ± 0,08 | 5 / 16 |
+| CoinRun | `bc_hier223_enc128` | 3,42 ± 0,06 | 1,00 ± 0,06 | 2,57 ± 0,06 | 0,90 ± 0,01 | 3,21 ± 0,03 | 5 / 16 |
+
+Perfil por retraso de los modelos nuevos (efecto de reemplazar un solo
+token, media de semillas):
+
+| Tarea | Modelo | s, k = 1…5 | a, k = 1…5 |
+|---|---|---|---|
+| cheetah | `bc_hier223` | 0,101 0,093 0,089 0,079 0,075 | 0,108 0,123 0,128 0,132 0,132 |
+| cheetah | `bc_hier223_enc128` | 0,095 0,089 0,083 0,076 0,072 | 0,077 0,079 0,081 0,081 0,080 |
+| walker | `bc_hier223` | 0,083 0,068 0,058 0,051 0,045 | 0,095 0,119 0,130 0,136 0,133 |
+| walker | `bc_hier223_enc128` | 0,095 0,076 0,065 0,055 0,048 | 0,063 0,074 0,076 0,077 0,076 |
+| quadruped | `bc_hier223` | 0,156 0,108 0,079 0,062 0,056 | 0,136 0,140 0,135 0,119 0,108 |
+| quadruped | `bc_hier223_enc128` | 0,112 0,074 0,052 0,043 0,035 | 0,081 0,089 0,080 0,073 0,067 |
+| CoinRun | `bc_hier223` | 0,175 0,106 0,092 0,072 0,052 | 0,79 0,52 0,44 0,32 0,23 |
+| CoinRun | `bc_hier223_enc128` | 0,089 0,059 0,049 0,034 0,023 | 0,74 0,57 0,53 0,33 0,28 |
+
+Copycat: DMC, RMS(â, a_{t−1}) hier223/enc128 vs. experto: cheetah
+0,399/0,386 vs. 0,406; walker 0,498/0,494 vs. 0,509; quadruped
+0,987/1,002 vs. 0,858. CoinRun, P(â = a_{t−1}): 0,187 (hier223) y 0,188
+(enc128) vs. 0,154 del experto; acierto P(â = a_t) 0,776 y 0,728.
+
+**Lectura:**
+1. **La conclusión de §7.16.2 se mantiene con 3 capas conjuntas:** en
+   DMC, los dos jerárquicos nuevos dependen de las acciones pasadas mucho
+   más que BC-uni (frac_action_past 0,53-0,77 vs. 0,30-0,39), en las tres
+   tareas. Así que el uso de acciones pasadas viene de los **flujos
+   separados**, no de la fusión tardía de una sola capa (punto 7 de
+   §7.16.2). Con los stacks por modalidad a 128 el efecto baja un poco
+   (0,53-0,63 vs. 0,66-0,77 a 256) pero sigue lejos de BC-uni.
+2. El perfil de acciones de `bc_hier223` crece con el retraso entre
+   k = 1 y 5, igual que BC-hier; el de enc128 es casi plano. En BC-uni
+   decrece.
+3. **CoinRun:** con 3 capas conjuntas, el efecto de todas las acciones
+   pasadas (2,57-2,73) y de a_{t−1} (0,74-0,79) sube al nivel de BC-uni
+   (2,95 y 1,15) y se aleja de BC-hier (1,75 y 0,38). mean_lag_past queda
+   entre los dos (3,1-3,2 vs. 2,85 uni y 3,72 hier). La diferencia de
+   §7.16.2 entre BC-uni y BC-hier en CoinRun parece venir de la fusión de
+   una sola capa más que de la topología.
+4. Copycat: igual que antes, sin evidencia en DMC y un sesgo leve en
+   CoinRun (19% vs. 15% del experto).
+
+#### 7.19.4 Métrica 4 — Integrated Gradients + AOPC (los cuatro modelos)
+
+Jobs 34132 y 34152 (quadruped), mismo protocolo que §7.16.2 (m = 128).
+Media ± desviación (poblacional) sobre 3 semillas; filas de BC-uni/BC-hier
+de §7.16.2.
+
+| Tarea | Modelo | IG frac_action_past | IG mean_lag_past | Completitud (err. rel.) | Spearman(IG, oclusión) | AOPC hist. IG | oclusión | recencia | azar |
+|---|---|---|---|---|---|---|---|---|---|
+| cheetah | BC-uni | 0,22 ± 0,02 | 11,3 ± 0,5 | 7,2% | 0,92 | 0,168 | 0,183 | 0,155 | 0,057 |
+| cheetah | BC-hier | 0,61 ± 0,05 | 10,9 ± 0,9 | 4,1% | 0,89 | 0,169 | 0,169 | 0,163 | 0,081 |
+| cheetah | `bc_hier223` | 0,62 ± 0,03 | 11,5 ± 0,1 | 5,7% | 0,92 | 0,193 | 0,200 | 0,192 | 0,093 |
+| cheetah | `bc_hier223_enc128` | 0,49 ± 0,04 | 11,1 ± 0,3 | 4,9% | 0,92 | 0,160 | 0,171 | 0,158 | 0,064 |
+| walker | BC-uni | 0,31 ± 0,07 | 11,3 ± 0,3 | 6,4% | 0,90 | 0,145 | 0,173 | 0,146 | 0,049 |
+| walker | BC-hier | 0,49 ± 0,06 | 8,6 ± 0,4 | 3,6% | 0,88 | 0,131 | 0,151 | 0,125 | 0,061 |
+| walker | `bc_hier223` | 0,62 ± 0,02 | 9,9 ± 0,3 | 4,8% | 0,93 | 0,164 | 0,178 | 0,152 | 0,074 |
+| walker | `bc_hier223_enc128` | 0,63 ± 0,03 | 11,1 ± 0,4 | 4,2% | 0,93 | 0,127 | 0,152 | 0,130 | 0,050 |
+| quadruped | BC-uni | 0,24 ± 0,03 | 10,5 ± 0,6 | 8,2% | 0,87 | 0,211 | 0,244 | 0,182 | 0,047 |
+| quadruped | BC-hier | 0,44 ± 0,03 | 6,9 ± 0,5 | 4,9% | 0,94 | 0,290 | 0,331 | 0,269 | 0,082 |
+| quadruped | `bc_hier223` | 0,44 ± 0,04 | 8,3 ± 0,5 | 7,2% | 0,93 | 0,264 | 0,302 | 0,260 | 0,075 |
+| quadruped | `bc_hier223_enc128` | 0,48 ± 0,07 | 10,9 ± 0,6 | 7,5% | 0,87 | 0,206 | 0,240 | 0,189 | 0,056 |
+| CoinRun | BC-uni | 0,55 ± 0,01 | 4,7 ± 0,1 | 1,4% | 0,64 | 1,79 | 2,39 | 2,04 | 0,92 |
+| CoinRun | BC-hier | 0,63 ± 0,02 | 3,5 ± 0,1 | 1,1% | 0,73 | 1,27 | 1,56 | 1,20 | 0,70 |
+| CoinRun | `bc_hier223` | 0,39 ± 0,03 | 3,8 ± 0,0 | 1,2% | 0,67 | 1,54 | 2,17 | 1,72 | 0,85 |
+| CoinRun | `bc_hier223_enc128` | 0,55 ± 0,01 | 4,0 ± 0,1 | 0,8% | 0,72 | 1,41 | 2,01 | 1,43 | 0,76 |
+
+**Lectura:**
+1. IG sigue bien calculado en los modelos nuevos (completitud 1-8%,
+   Spearman con la oclusión 0,87-0,93 en DMC y ~0,7 en CoinRun) y el orden
+   de fidelidad no cambia: oclusión > IG ≈ recencia en DMC; en CoinRun IG
+   pierde contra recencia en `bc_hier223` (1,54 vs. 1,72) y empata en
+   enc128.
+2. **En DMC, IG confirma la dirección de la métrica 2 también con los
+   modelos nuevos:** frac_action_past 0,44-0,63 en los dos jerárquicos
+   nuevos vs. 0,22-0,31 en BC-uni. Es la conclusión más robusta: aparece
+   en las dos métricas, en las tres tareas DMC y en las tres variantes
+   jerárquicas.
+3. **En CoinRun, IG y la intervención vuelven a no coincidir:** la
+   intervención da a los dos nuevos un frac_action_past alto (0,80-0,90);
+   IG les da 0,39 (`bc_hier223`) y 0,55 (enc128). Igual que el "cuánto
+   mira atrás" de §7.16.2, el reparto estados/acciones en CoinRun queda
+   **dependiente del método**.
+
+#### 7.19.5 SARFA y AttAttr en CoinRun (los cuatro modelos)
+
+Job 34144 (grabación de 50 niveles de test → AttAttr → SARFA, para las dos
+variantes nuevas × 3 semillas). Por semilla: 2799-3016 estados con
+AttAttr y 992-999 con SARFA. Métricas recalculadas sobre los cuatro
+modelos con `slurm_bc/interp_metrics_4modelos.sh` (srun, jobs 34301-34303)
+en `interp_procgen/metrics_4modelos/`; los archivos del 2026-10-06 en
+`metrics/` y `sarfa/*.csv` no se tocaron. BC-uni y BC-hier reproducen
+exacto los números de §7.11.
+
+**Corrección en `analysis/bc_attn_attr_metrics.py`:** el resumen
+(`attattr_summary.txt`) agrupaba por `topology`, así que juntaba BC-hier,
+`bc_hier223` y enc128 (los tres son `hier`) y se caía al leer capas que
+no existían en todos (`KeyError: 'joint1'`). Ahora agrupa por nombre de
+modelo sin `_s<semilla>`. El CSV/JSON por semilla no cambia. Los scripts
+de SARFA necesitan scipy, que no está en el `python` base: se corren con
+`~/miniconda3/envs/maskdp-env/bin/python`.
+
+*SARFA* (media ± desviación muestral sobre 3 semillas). La última columna
+son los modelos **de Benjamín** (§7.11); `bc_hier223_enc128` es **nuestro**
+(se llama así porque copia los anchos de su `reduce_enc`, cuyo snapshot está
+en `74_hier_enc128_dec256`):
+
+| Métrica | BC-uni | BC-hier | `bc_hier223` | `bc_hier223_enc128` | Benjamín `reduce_enc` / unistream |
+|---|---|---|---|---|---|
+| Entropía espacial (nats) | 3,655 ± 0,024 | 3,804 ± 0,022 | 3,742 ± 0,031 | 3,728 ± 0,034 | 3,721 / 3,752 |
+| Concentración top-5% | 0,599 ± 0,006 | 0,557 ± 0,006 | 0,573 ± 0,010 | 0,583 ± 0,011 | 0,608 / 0,596 |
+| Concentración top-10% | 0,782 ± 0,005 | 0,752 ± 0,005 | 0,765 ± 0,008 | 0,771 ± 0,007 | 0,790 / 0,785 |
+| Concentración top-20% | 0,916 ± 0,003 | 0,901 ± 0,002 | 0,908 ± 0,004 | 0,910 ± 0,002 | 0,919 / 0,917 |
+| Saliencia temporal, frame actual | 0,420 ± 0,050 | 0,434 ± 0,037 | 0,408 ± 0,031 | 0,431 ± 0,041 | – |
+| Saliencia temporal, 1 paso atrás | 0,131 ± 0,011 | 0,137 ± 0,005 | 0,144 ± 0,005 | 0,125 ± 0,007 | – |
+
+*AttAttr* (campo receptivo en pasos, mediana sobre estados, media sobre
+cabezas):
+
+| Conjunto de capas | BC-uni | BC-hier | `bc_hier223` | `bc_hier223_enc128` |
+|---|---|---|---|---|
+| Última capa conjunta | 4,39 ± 0,27 | 2,86 ± 0,03 | 3,34 ± 0,13 | 3,27 ± 0,04 |
+| Capas conjuntas, media simple | 3,01 ± 0,12 | 2,86 ± 0,03 | 2,95 ± 0,07 | 2,84 ± 0,02 |
+| Capas conjuntas, ponderado por masa | 2,33 ± 0,07 | 2,86 ± 0,03 | 2,89 ± 0,06 | 2,74 ± 0,02 |
+| Todo el modelo, media simple | 3,01 ± 0,12 | 2,58 ± 0,02 | 2,57 ± 0,05 | 2,52 ± 0,01 |
+| Todo el modelo, ponderado por masa | 2,33 ± 0,07 | 2,30 ± 0,02 | 2,43 ± 0,03 | 2,52 ± 0,01 |
+| Herfindahl, última capa conjunta | 0,116 ± 0,008 | 0,182 ± 0,004 | 0,157 ± 0,003 | 0,155 ± 0,002 |
+
+Por capa (campo receptivo / fracción de masa sobre el total del modelo):
+- `bc_hier223`: obs0 1,25 / 0,22; obs1 3,42 / 0,10; act0 1,97 / 0,14;
+  act1 2,54 / 0,07; joint0 2,72 / 0,20; joint1 2,80 / 0,16; joint2
+  3,34 / 0,11.
+- `bc_hier223_enc128`: obs0 1,32 / 0,13; obs1 3,32 / 0,08; act0
+  1,96 / 0,09; act1 2,55 / 0,06; joint0 2,49 / 0,29; joint1 2,76 / 0,22;
+  joint2 3,27 / 0,13.
+
+**Lectura:**
+1. **SARFA: las variantes nuevas quedan entre BC-uni y BC-hier** en las
+   cuatro métricas espaciales, y cerca de los números de Benjamín
+   (entropía 3,73-3,74 vs. sus 3,72/3,75). La separación nítida
+   BC-hier/BC-uni de §7.11 se reduce a la mitad al pasar a 3 capas
+   conjuntas. Las diferencias contra los dos modelos viejos son de
+   p = 0,02-0,09 (Welch, n = 3), menos claras que la de §7.11.
+2. La saliencia temporal sigue sin distinguir modelos (frame actual
+   0,41-0,43 en los cuatro, p > 0,4).
+3. **AttAttr en la última capa conjunta: los nuevos quedan entre los dos**
+   (3,3 vs. 2,86 de BC-hier y 4,39 de BC-uni). Con 3 capas conjuntas, la
+   última capa ya no es la primera después de los stacks por modalidad, así
+   que la objeción de comparabilidad de §7.11 (punto 3) pesa menos, pero
+   sigue sin ser igual a BC-uni (3.ª vs. 5.ª capa conjunta).
+4. Las agregaciones de todo el modelo vuelven a ordenar distinto según el
+   peso: en la media simple los tres jerárquicos quedan en 2,5-2,6 (por
+   debajo de BC-uni, 3,0); en la ponderada por masa, enc128 y `bc_hier223`
+   quedan **por encima** de BC-uni (2,52 y 2,43 vs. 2,33). La conclusión de
+   §7.16.2 se mantiene: las agregaciones de AttAttr no son una medida
+   estable de "cuánto mira atrás".
+5. El reparto por profundidad sigue el patrón de §7.11: las primeras capas
+   de cada stack tienen alcance corto y las profundas, largo. En las capas
+   conjuntas el alcance crece con la profundidad (2,5-2,7 → 3,3) y la masa
+   baja (0,43-0,45 → 0,20-0,23 del total conjunto), igual que en BC-uni.
+
+#### 7.19.6 Significancia de los cambios (retorno)
+
+Welch t-test, n = 3 semillas por lado, sin corrección por comparaciones
+múltiples (con n = 3 la potencia es baja: p ≈ 0,05 es un indicio).
+Benjamín = `reduce_enc` sin aumentación con la evaluación corregida (DMC,
+§7.13, por semilla) y el número de su tesis en CoinRun (test 8,93 ± 0,31,
+desde media y desviación).
+
+| Tarea | Modelo | vs. BC-uni | vs. BC-hier | vs. Benjamín `reduce_enc` |
+|---|---|---|---|---|
+| cheetah | `bc_hier223` | −7,5 (p = 0,34) | −11,7 (p = 0,054) | +280 (p = 0,37) |
+| cheetah | `bc_hier223_enc128` | +11,7 (p = 0,20) | +7,4 (p = 0,24) | +299 (p = 0,34) |
+| walker | `bc_hier223` | **−5,1 (p = 0,005)** | **−9,9 (p = 0,013)** | +28,5 (p = 0,19) |
+| walker | `bc_hier223_enc128` | −0,5 (p = 0,80) | −5,4 (p = 0,085) | +33,0 (p = 0,15) |
+| quadruped | `bc_hier223` | −0,6 (p = 0,94) | +0,8 (p = 0,93) | 0,0 (p = 1,0) |
+| quadruped | `bc_hier223_enc128` | +0,8 (p = 0,81) | +2,3 (p = 0,42) | +1,5 (p = 0,90) |
+| CoinRun test | `bc_hier223` | −0,07 (p = 0,73) | +0,17 (p = 0,48) | **−0,80 (p = 0,030)** |
+| CoinRun test | `bc_hier223_enc128` | +0,23 (p = 0,39) | +0,47 (p = 0,15) | −0,50 (p = 0,13) |
+
+Entre las variantes nuevas: enc128 > `bc_hier223` en cheetah (+19,2,
+p = 0,041); walker +4,5 (p = 0,11); quadruped y CoinRun sin diferencia.
+Curva de contexto, `bc_hier223`: K = 4 vs. full en walker 770,2 vs. 756,5
+(p = 0,002); K = 8 vs. full en cheetah 787,2 vs. 772,6 (p = 0,001).
+BC-hier quadruped K = 1 vs. full: 895,0 vs. 917,2 (p = 0,02).
+
+**Conclusión:**
+1. **Contra Benjamín:** en DMC ninguna diferencia es significativa: les
+   ganamos en cheetah y walker, pero su `reduce_enc` tiene demasiada
+   varianza (una semilla de cheetah colapsa en 9; sin ella p ≈ 0,3). En
+   CoinRun seguimos por debajo: −0,8 con `bc_hier223` (p = 0,03) y −0,5
+   con enc128 (no significativo). Igualar profundidad y anchos no cierra
+   la brecha de generalización; lo que queda distinto en la arquitectura
+   es su fusión por co-atención.
+2. **Contra nuestros modelos:** `bc_hier223` es peor solo en walker
+   (significativo) y quizás en cheetah (p = 0,054), y su pérdida aparece
+   solo con ventanas largas. enc128 empata con BC-uni y BC-hier en todo.
+   **Ninguna de las dos variantes mejora significativamente el retorno.**
+
+#### 7.19.7 Diferencias entre nuestros modelos jerárquicos y `reduce_enc`
+
+Junta lo de §7.12, §7.14 y §7.15. **Nombres:** `reduce_enc` es el modelo
+jerárquico de Benjamín (snapshot `74_hier_enc128_dec256`); `bc_hier223` y
+`bc_hier223_enc128` son nuestros. `enc128` en nuestro nombre indica que
+copiamos sus anchos, no que sea su modelo.
+
+| | Benjamín `reduce_enc` | BC-hier | `bc_hier223` | `bc_hier223_enc128` |
+|---|---|---|---|---|
+| Objetivo | enmascarado (MaskDP): reconstruye tokens con máscara | BC autoregresivo: a_t desde s_t | igual | igual |
+| Atención | encoders + decoder **bidireccional** con tokens de máscara | causal | causal | causal |
+| Encoders por modalidad | 2 + 2 a **128** | 2 + 2 a 256 | 2 + 2 a 256 | 2 + 2 a **128** |
+| Mezcla de modalidades | 1 capa de **co-atención** (`CoAttentionBlock`, un MLP por modalidad) + 2 de decoder | 1 bloque de auto-atención conjunta | 3 bloques conjuntos | 3 bloques conjuntos |
+| Capas en serie | 5 | 3 | 5 | 5 |
+| Capas que mezclan modalidades | 3 | 1 | 3 | 3 |
+| Proyección 128 → 256 antes de mezclar | sí (`state_encoder_norm`/`state_proj`) | no aplica | no aplica | sí (`LayerNorm + Linear`) |
+| Posición | sinusoidal fija | aprendida | aprendida | aprendida |
+| Params DMC (cheetah) | 4,16 M entrenables (4,23 M en total) | 3,99 M (−4%) | 5,57 M (+34%) | 3,25 M (−22%) |
+| IMPALA (CoinRun) | congelado, proyección aleatoria a 128 | congelado, a 256 | congelado, a 256 | congelado, a 128 (como él) |
+| Hiperparámetros, datos, scripts de evaluación | los suyos | iguales | iguales | iguales |
+| Evaluación DMC | la suya tiene desfase de un paso (§7.8); se compara con la corregida (§7.13) | sin desfase | sin desfase | sin desfase |
+
+**Qué queda distinto después de §7.15.** `bc_hier223_enc128` iguala su
+profundidad (5 en serie), el número de capas de mezcla (3) y sus anchos.
+Las diferencias que quedan son:
+1. **el objetivo**, que es lo que se quiere comparar: enmascarado y
+   bidireccional en su modelo, autoregresivo y causal en el nuestro;
+2. **el tipo de fusión**: co-atención cruzada con un MLP por modalidad en
+   el suyo, auto-atención conjunta sobre tokens intercalados en el nuestro.
+   No se agregó co-atención porque nuestros modelos son de la familia DT;
+3. **la posición**: sinusoidal fija en el suyo, aprendida en el nuestro;
+4. **el tamaño**: −22%, por la co-atención y las proyecciones extra de su
+   decoder (§7.15).
+
+**Resultados, `reduce_enc` vs. `bc_hier223_enc128`** (§7.19.1, §7.19.6):
+cheetah 492,9 ± 420,2 vs. 791,8 ± 7,5 (p = 0,34; su s3 colapsa en 9);
+walker 728,0 ± 25,4 vs. 761,0 ± 3,1 (p = 0,15); quadruped 918,0 ± 17,0
+vs. 919,5 ± 3,9 (p = 0,90); CoinRun test 8,93 ± 0,31 vs. 8,43 ± 0,32
+(p = 0,13). En DMC no hay diferencia significativa. En CoinRun su modelo
+sigue arriba, aunque con `bc_hier223_enc128` la brecha baja de −0,96
+(BC-hier) a −0,50 y deja de ser significativa. Sin una variante con
+co-atención o con posición sinusoidal no se puede separar cuánto de esa
+brecha viene del objetivo y cuánto de la fusión o la posición.
 
 ## Resumen de próximos pasos concretos
 
